@@ -4,7 +4,7 @@ import pytest
 import yt_dlp
 from unittest.mock import MagicMock, patch, call
 
-from downloader import download_video, _make_output_path, get_video_dimensions
+from downloader import download_video, _make_output_path, get_video_dimensions, get_video_info, _estimate_filesize
 from config import DOWNLOAD_DIR
 
 
@@ -104,6 +104,7 @@ class TestDownloadVideo:
         assert captured_opts["retries"] == 3
         assert "max_filesize" in captured_opts
         assert "progress_hooks" in captured_opts
+        assert "720" in captured_opts["format"]
 
     def test_progress_callback_called_on_download(self, tmp_path):
         fake_file = tmp_path / "video.mp4"
@@ -158,6 +159,67 @@ class TestDownloadVideo:
         hook({"status": "downloading"})
         hook({"status": "finished"})
         assert progress_calls == ["downloading", "finished"]
+
+
+class TestEstimateFilesize:
+    def test_uses_filesize_when_available(self):
+        info = {"filesize": 1000, "filesize_approx": 500}
+        assert _estimate_filesize(info) == 1000
+
+    def test_falls_back_to_approx(self):
+        info = {"filesize": None, "filesize_approx": 500}
+        assert _estimate_filesize(info) == 500
+
+    def test_sums_dash_streams(self):
+        info = {
+            "requested_formats": [
+                {"filesize": 800, "filesize_approx": None},
+                {"filesize": 200, "filesize_approx": None},
+            ]
+        }
+        assert _estimate_filesize(info) == 1000
+
+    def test_returns_none_when_no_size(self):
+        assert _estimate_filesize({}) is None
+
+
+class TestGetVideoInfo:
+    def _mock_ydl_cm(self, info: dict) -> MagicMock:
+        ydl = MagicMock()
+        ydl.extract_info.return_value = info
+        cm = MagicMock()
+        cm.__enter__ = MagicMock(return_value=ydl)
+        cm.__exit__ = MagicMock(return_value=False)
+        return cm
+
+    def test_returns_title_duration_filesize(self):
+        cm = self._mock_ydl_cm({
+            "title": "Test video",
+            "duration": 120,
+            "filesize": 5 * 1024 * 1024,
+        })
+        with patch("yt_dlp.YoutubeDL", return_value=cm):
+            result = get_video_info("https://youtu.be/abc")
+
+        assert result["title"] == "Test video"
+        assert result["duration"] == 120
+        assert result["filesize"] == 5 * 1024 * 1024
+
+    def test_fallback_title_when_missing(self):
+        cm = self._mock_ydl_cm({"title": None, "duration": None})
+        with patch("yt_dlp.YoutubeDL", return_value=cm):
+            result = get_video_info("https://youtu.be/abc")
+        assert result["title"] == "Sin título"
+
+    def test_propagates_download_error(self):
+        ydl = MagicMock()
+        ydl.extract_info.side_effect = yt_dlp.DownloadError("private")
+        cm = MagicMock()
+        cm.__enter__ = MagicMock(return_value=ydl)
+        cm.__exit__ = MagicMock(return_value=False)
+        with patch("yt_dlp.YoutubeDL", return_value=cm):
+            with pytest.raises(yt_dlp.DownloadError):
+                get_video_info("https://youtu.be/abc")
 
 
 class TestGetVideoDimensions:

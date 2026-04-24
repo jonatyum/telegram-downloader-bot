@@ -23,6 +23,9 @@ SUPPORTED_DOMAINS = [
     "t.co",
 ]
 
+MAX_VIDEO_HEIGHT = 720        # resolución máxima de descarga (720p)
+MAX_PREFLIGHT_SIZE_BYTES = 100 * 1024 * 1024  # rechazar videos estimados > 100 MB
+
 # Rate limiting: máximo de requests por usuario en una ventana de tiempo
 RATE_LIMIT_REQUESTS = 5   # máximo de descargas
 RATE_LIMIT_WINDOW = 60    # en segundos (ventana deslizante)
