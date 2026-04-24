@@ -1,0 +1,196 @@
+import json
+import os
+import pytest
+import yt_dlp
+from unittest.mock import MagicMock, patch, call
+
+from downloader import download_video, _make_output_path, get_video_dimensions
+from config import DOWNLOAD_DIR
+
+
+class TestMakeOutputPath:
+    def test_creates_download_dir(self, tmp_path):
+        target = str(tmp_path / "subdir")
+        with patch("downloader.DOWNLOAD_DIR", target):
+            path = _make_output_path()
+        assert os.path.isdir(target)
+
+    def test_path_contains_uuid_and_ext_placeholder(self, tmp_path):
+        with patch("downloader.DOWNLOAD_DIR", str(tmp_path)):
+            path = _make_output_path()
+        assert "%(ext)s" in path
+        assert str(tmp_path) in path
+
+    def test_each_call_returns_unique_path(self, tmp_path):
+        with patch("downloader.DOWNLOAD_DIR", str(tmp_path)):
+            p1 = _make_output_path()
+            p2 = _make_output_path()
+        assert p1 != p2
+
+
+class TestDownloadVideo:
+    def _mock_ydl(self, filename: str) -> MagicMock:
+        ydl = MagicMock()
+        ydl.extract_info.return_value = {"id": "abc", "ext": "mp4"}
+        ydl.prepare_filename.return_value = filename
+        return ydl
+
+    def test_returns_filepath_when_file_exists(self, tmp_path):
+        fake_file = tmp_path / "video.mp4"
+        fake_file.write_bytes(b"data")
+
+        ydl_mock = self._mock_ydl(str(fake_file))
+        cm = MagicMock()
+        cm.__enter__ = MagicMock(return_value=ydl_mock)
+        cm.__exit__ = MagicMock(return_value=False)
+
+        with patch("downloader.DOWNLOAD_DIR", str(tmp_path)), \
+             patch("yt_dlp.YoutubeDL", return_value=cm):
+            result = download_video("https://www.tiktok.com/@user/video/123")
+
+        assert result == str(fake_file)
+
+    def test_falls_back_to_mp4_when_original_missing(self, tmp_path):
+        reported_path = str(tmp_path / "video.webm")
+        fallback_path = str(tmp_path / "video.mp4")
+
+        # Only the .mp4 fallback exists on disk
+        open(fallback_path, "wb").close()
+
+        ydl_mock = self._mock_ydl(reported_path)
+        cm = MagicMock()
+        cm.__enter__ = MagicMock(return_value=ydl_mock)
+        cm.__exit__ = MagicMock(return_value=False)
+
+        with patch("downloader.DOWNLOAD_DIR", str(tmp_path)), \
+             patch("yt_dlp.YoutubeDL", return_value=cm):
+            result = download_video("https://www.tiktok.com/@user/video/123")
+
+        assert result == fallback_path
+
+    def test_propagates_download_error(self, tmp_path):
+        ydl_mock = MagicMock()
+        ydl_mock.extract_info.side_effect = yt_dlp.DownloadError("ERROR: 404")
+        cm = MagicMock()
+        cm.__enter__ = MagicMock(return_value=ydl_mock)
+        cm.__exit__ = MagicMock(return_value=False)
+
+        with patch("downloader.DOWNLOAD_DIR", str(tmp_path)), \
+             patch("yt_dlp.YoutubeDL", return_value=cm):
+            with pytest.raises(yt_dlp.DownloadError):
+                download_video("https://www.tiktok.com/@user/video/bad")
+
+    def test_passes_correct_options_to_ydl(self, tmp_path):
+        fake_file = tmp_path / "video.mp4"
+        fake_file.write_bytes(b"data")
+
+        ydl_mock = self._mock_ydl(str(fake_file))
+        cm = MagicMock()
+        cm.__enter__ = MagicMock(return_value=ydl_mock)
+        cm.__exit__ = MagicMock(return_value=False)
+
+        captured_opts = {}
+
+        def capture_ydl(opts):
+            captured_opts.update(opts)
+            return cm
+
+        with patch("downloader.DOWNLOAD_DIR", str(tmp_path)), \
+             patch("yt_dlp.YoutubeDL", side_effect=capture_ydl):
+            download_video("https://www.tiktok.com/@user/video/123")
+
+        assert captured_opts["quiet"] is True
+        assert captured_opts["merge_output_format"] == "mp4"
+        assert captured_opts["retries"] == 3
+        assert "max_filesize" in captured_opts
+        assert "progress_hooks" in captured_opts
+
+    def test_progress_callback_called_on_download(self, tmp_path):
+        fake_file = tmp_path / "video.mp4"
+        fake_file.write_bytes(b"data")
+
+        progress_calls = []
+
+        def fake_on_progress(d):
+            progress_calls.append(d)
+
+        ydl_mock = self._mock_ydl(str(fake_file))
+        cm = MagicMock()
+        cm.__enter__ = MagicMock(return_value=ydl_mock)
+        cm.__exit__ = MagicMock(return_value=False)
+
+        captured_opts = {}
+
+        def capture_ydl(opts):
+            captured_opts.update(opts)
+            return cm
+
+        with patch("downloader.DOWNLOAD_DIR", str(tmp_path)), \
+             patch("yt_dlp.YoutubeDL", side_effect=capture_ydl):
+            download_video("https://www.tiktok.com/@user/video/123", on_progress=fake_on_progress)
+
+        # Simulate the hook firing — now receives status string
+        hook = captured_opts["progress_hooks"][0]
+        hook({"status": "downloading"})
+        assert progress_calls == ["downloading"]
+
+    def test_progress_hook_passes_all_statuses(self, tmp_path):
+        fake_file = tmp_path / "video.mp4"
+        fake_file.write_bytes(b"data")
+
+        progress_calls = []
+        ydl_mock = self._mock_ydl(str(fake_file))
+        cm = MagicMock()
+        cm.__enter__ = MagicMock(return_value=ydl_mock)
+        cm.__exit__ = MagicMock(return_value=False)
+
+        captured_opts = {}
+
+        def capture_ydl(opts):
+            captured_opts.update(opts)
+            return cm
+
+        with patch("downloader.DOWNLOAD_DIR", str(tmp_path)), \
+             patch("yt_dlp.YoutubeDL", side_effect=capture_ydl):
+            download_video("https://www.tiktok.com/@user/video/123", on_progress=lambda s: progress_calls.append(s))
+
+        hook = captured_opts["progress_hooks"][0]
+        hook({"status": "downloading"})
+        hook({"status": "finished"})
+        assert progress_calls == ["downloading", "finished"]
+
+
+class TestGetVideoDimensions:
+    def _ffprobe_output(self, width: int, height: int) -> str:
+        return json.dumps({"streams": [{"width": width, "height": height, "codec_type": "video"}]})
+
+    def test_returns_width_and_height(self, tmp_path):
+        fake = tmp_path / "video.mp4"
+        fake.write_bytes(b"data")
+        mock_result = MagicMock()
+        mock_result.stdout = self._ffprobe_output(1080, 1920)
+
+        with patch("downloader.subprocess.run", return_value=mock_result):
+            w, h = get_video_dimensions(str(fake))
+
+        assert w == 1080
+        assert h == 1920
+
+    def test_returns_zeros_on_empty_streams(self, tmp_path):
+        fake = tmp_path / "video.mp4"
+        fake.write_bytes(b"data")
+        mock_result = MagicMock()
+        mock_result.stdout = json.dumps({"streams": []})
+
+        with patch("downloader.subprocess.run", return_value=mock_result):
+            w, h = get_video_dimensions(str(fake))
+
+        assert w == 0
+        assert h == 0
+
+    def test_returns_zeros_on_exception(self, tmp_path):
+        with patch("downloader.subprocess.run", side_effect=Exception("ffprobe not found")):
+            w, h = get_video_dimensions("nonexistent.mp4")
+
+        assert w == 0
+        assert h == 0
