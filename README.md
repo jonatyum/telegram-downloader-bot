@@ -1,6 +1,6 @@
 # Telegram Video Downloader Bot
 
-Bot de Telegram que descarga videos de TikTok, Instagram y Facebook a partir de un link y los envía de vuelta al usuario.
+Bot de Telegram que descarga videos de TikTok, Instagram, Facebook, YouTube y X/Twitter a partir de un link y los envía de vuelta al usuario.
 
 ## Arquitectura
 
@@ -27,7 +27,7 @@ Usuario → Link → bot.py detecta plataforma
                       ↓
                downloader.py (yt-dlp)
                       ↓
-           Archivo temporal en /tmp
+           Archivo temporal en downloads/
                       ↓
          bot.py envía video a Telegram
                       ↓
@@ -39,9 +39,10 @@ Usuario → Link → bot.py detecta plataforma
 | Plataforma | Soporte | Notas |
 |---|---|---|
 | TikTok | ✅ | Sin watermark cuando es posible |
-| Instagram | ✅ | Reels, posts públicos |
+| Instagram | ✅ | Reels y posts públicos |
 | Facebook | ✅ | Videos públicos |
-| YouTube | ✅ | Bonus: funciona también |
+| YouTube | ✅ | Videos y Shorts |
+| X / Twitter | ✅ | Videos públicos |
 
 ## Límites de Telegram
 

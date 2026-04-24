@@ -12,11 +12,11 @@ def _make_output_path() -> str:
     return os.path.join(DOWNLOAD_DIR, f"{uuid.uuid4()}.%(ext)s")
 
 
-def download_video(url: str, on_progress: Callable[[dict], None] | None = None) -> str:
+def download_video(url: str, on_progress: Callable[[str], None] | None = None) -> str:
     """
     Descarga el video de la URL dada y devuelve la ruta al archivo.
     Lanza yt_dlp.DownloadError si algo falla.
-    on_progress recibe el dict de progreso de yt-dlp en cada actualización.
+    on_progress recibe el status string de yt-dlp ("downloading", "finished", etc).
     """
     output_template = _make_output_path()
 

@@ -34,7 +34,7 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user = update.effective_user
     upsert_user(user.id, user.username, user.first_name)
     await update.message.reply_text(
-        "👋 ¡Hola! Envíame un link de TikTok, Instagram, Facebook o YouTube "
+        "👋 ¡Hola! Envíame un link de TikTok, Instagram, Facebook, YouTube o X/Twitter "
         "y te descargo el video. 🎬"
     )
 
@@ -82,7 +82,7 @@ async def handle_link(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
     if not _is_supported_url(url):
         await update.message.reply_text(
-            "❌ No reconozco ese link. Prueba con TikTok, Instagram, Facebook o YouTube."
+            "❌ No reconozco ese link. Prueba con TikTok, Instagram, Facebook, YouTube o X/Twitter."
         )
         return
 

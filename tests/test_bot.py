@@ -99,8 +99,9 @@ class TestCmdStart:
 
         update.message.reply_text.assert_called_once()
         text = update.message.reply_text.call_args[0][0]
-        assert "TikTok" in text
         assert "👋" in text
+        assert "TikTok" in text
+        assert "X/Twitter" in text
 
 
 # ---------------------------------------------------------------------------
@@ -116,7 +117,7 @@ class TestCmdHelp:
 
         update.message.reply_text.assert_called_once()
         text = update.message.reply_text.call_args[0][0]
-        for platform in ("TikTok", "Instagram", "Facebook", "YouTube"):
+        for platform in ("TikTok", "Instagram", "Facebook", "YouTube", "Twitter"):
             assert platform in text
 
 
