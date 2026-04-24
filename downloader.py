@@ -4,7 +4,7 @@ import subprocess
 import uuid
 from collections.abc import Callable
 import yt_dlp
-from config import DOWNLOAD_DIR, MAX_DOCUMENT_SIZE_BYTES
+from config import DOWNLOAD_DIR, MAX_DOCUMENT_SIZE_BYTES, MAX_VIDEO_HEIGHT, MAX_PREFLIGHT_SIZE_BYTES
 
 
 def _make_output_path() -> str:
@@ -28,10 +28,10 @@ def download_video(url: str, on_progress: Callable[[str], None] | None = None) -
         "outtmpl": output_template,
         # Prioriza H.264 (avc) para máxima compatibilidad; VP9 requiere re-encode
         "format": (
-            "bestvideo[vcodec^=avc][ext=mp4]+bestaudio[ext=m4a]"
-            "/bestvideo[vcodec^=avc]+bestaudio"
-            "/bestvideo[ext=mp4]+bestaudio[ext=m4a]"
-            "/best[ext=mp4]/best"
+            f"bestvideo[vcodec^=avc][height<={MAX_VIDEO_HEIGHT}][ext=mp4]+bestaudio[ext=m4a]"
+            f"/bestvideo[vcodec^=avc][height<={MAX_VIDEO_HEIGHT}]+bestaudio"
+            f"/bestvideo[height<={MAX_VIDEO_HEIGHT}][ext=mp4]+bestaudio[ext=m4a]"
+            f"/best[height<={MAX_VIDEO_HEIGHT}][ext=mp4]/best[height<={MAX_VIDEO_HEIGHT}]/best"
         ),
         "merge_output_format": "mp4",
         "postprocessor_args": {
@@ -60,6 +60,49 @@ def download_video(url: str, on_progress: Callable[[str], None] | None = None) -
             filename = filename.rsplit(".", 1)[0] + ".mp4"
 
     return filename
+
+
+def _estimate_filesize(info: dict) -> int | None:
+    # Para streams DASH (video+audio separados), suma ambos tamaños
+    requested = info.get("requested_formats") or []
+    if requested:
+        total = sum(
+            (f.get("filesize") or f.get("filesize_approx") or 0)
+            for f in requested
+        )
+        return total or None
+    return info.get("filesize") or info.get("filesize_approx")
+
+
+def get_video_info(url: str) -> dict:
+    """
+    Obtiene metadatos del video sin descargarlo.
+    Retorna title, duration (segundos) y filesize (bytes, puede ser None).
+    Lanza yt_dlp.DownloadError si el video no existe o es privado.
+    """
+    _base_opts = {
+        "quiet": True,
+        "no_warnings": True,
+        "format": (
+            f"bestvideo[vcodec^=avc][height<={MAX_VIDEO_HEIGHT}][ext=mp4]+bestaudio[ext=m4a]"
+            f"/bestvideo[height<={MAX_VIDEO_HEIGHT}]+bestaudio/best[height<={MAX_VIDEO_HEIGHT}]/best"
+        ),
+        "http_headers": {
+            "User-Agent": (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/124.0.0.0 Safari/537.36"
+            )
+        },
+    }
+    with yt_dlp.YoutubeDL(_base_opts) as ydl:
+        info = ydl.extract_info(url, download=False)
+
+    return {
+        "title": info.get("title") or "Sin título",
+        "duration": info.get("duration"),
+        "filesize": _estimate_filesize(info),
+    }
 
 
 def get_video_dimensions(filepath: str) -> tuple[int, int]:

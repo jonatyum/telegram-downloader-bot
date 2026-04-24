@@ -71,6 +71,27 @@ def _make_context() -> MagicMock:
     return MagicMock()
 
 
+_DEFAULT_INFO = {"title": "Test", "filesize": None, "duration": 10}
+
+
+def _mock_executor(download_result=None, download_error=None, info=None):
+    """Devuelve un AsyncMock que simula las dos llamadas a run_in_executor:
+    1ª llamada (preflight get_video_info) → info dict
+    2ª llamada (download_video)           → download_result o lanza download_error
+    """
+    preflight = info or _DEFAULT_INFO
+
+    async def _side_effect(executor, func, *args):
+        if not hasattr(_side_effect, "_called"):
+            _side_effect._called = True
+            return preflight
+        if download_error:
+            raise download_error
+        return download_result
+
+    return AsyncMock(side_effect=_side_effect)
+
+
 # ---------------------------------------------------------------------------
 # cmd_start
 # ---------------------------------------------------------------------------
@@ -122,6 +143,63 @@ class TestCmdHelp:
 
 
 # ---------------------------------------------------------------------------
+# handle_link — preflight check
+# ---------------------------------------------------------------------------
+
+class TestPreflight:
+    async def test_rejects_video_over_limit(self):
+        update = _make_update("https://youtu.be/abc123")
+        status_msg = AsyncMock()
+        update.message.reply_text = AsyncMock(return_value=status_msg)
+        context = _make_context()
+
+        large_info = {"title": "Big video", "duration": 600, "filesize": 150 * 1024 * 1024}
+        with patch("bot.asyncio.get_running_loop") as mock_loop:
+            mock_loop.return_value.run_in_executor = _mock_executor(info=large_info)
+            await handle_link(update, context)
+
+        status_msg.edit_text.assert_called_once()
+        assert "❌" in status_msg.edit_text.call_args[0][0]
+        assert "150" in status_msg.edit_text.call_args[0][0]
+
+    async def test_proceeds_when_size_unknown(self, tmp_path):
+        fake_video = tmp_path / "video.mp4"
+        fake_video.write_bytes(b"data")
+
+        update = _make_update("https://youtu.be/abc123")
+        status_msg = AsyncMock()
+        update.message.reply_text = AsyncMock(return_value=status_msg)
+        context = _make_context()
+
+        with patch("bot.asyncio.get_running_loop") as mock_loop:
+            mock_loop.return_value.run_in_executor = _mock_executor(
+                info={"title": "Video", "duration": 60, "filesize": None},
+                download_result=str(fake_video),
+            )
+            await handle_link(update, context)
+
+        update.message.reply_video.assert_called_once()
+
+    async def test_proceeds_when_size_within_limit(self, tmp_path):
+        fake_video = tmp_path / "video.mp4"
+        fake_video.write_bytes(b"data")
+
+        update = _make_update("https://youtu.be/abc123")
+        status_msg = AsyncMock()
+        update.message.reply_text = AsyncMock(return_value=status_msg)
+        context = _make_context()
+
+        with patch("bot.asyncio.get_running_loop") as mock_loop:
+            mock_loop.return_value.run_in_executor = _mock_executor(
+                info={"title": "Video", "duration": 60, "filesize": 10 * 1024 * 1024},
+                download_result=str(fake_video),
+            )
+            await handle_link(update, context)
+
+        update.message.reply_video.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
 # handle_link
 # ---------------------------------------------------------------------------
 
@@ -137,7 +215,7 @@ class TestHandleLink:
 
     async def test_small_video_sent_as_video(self, tmp_path):
         fake_video = tmp_path / "video.mp4"
-        fake_video.write_bytes(b"0" * 1024)  # 1 KB — bajo el límite de 50 MB
+        fake_video.write_bytes(b"0" * 1024)
 
         update = _make_update("https://www.tiktok.com/@user/video/123")
         status_msg = AsyncMock()
@@ -145,18 +223,17 @@ class TestHandleLink:
         context = _make_context()
 
         with patch("bot.asyncio.get_running_loop") as mock_loop:
-            mock_loop.return_value.run_in_executor = AsyncMock(return_value=str(fake_video))
+            mock_loop.return_value.run_in_executor = _mock_executor(download_result=str(fake_video))
             await handle_link(update, context)
 
         update.message.reply_video.assert_called_once()
         update.message.reply_document.assert_not_called()
         status_msg.delete.assert_called_once()
-        assert not fake_video.exists()  # archivo limpiado
+        assert not fake_video.exists()
 
     async def test_large_video_sent_as_document(self, tmp_path):
         fake_video = tmp_path / "video.mp4"
-        large_content = b"0" * (51 * 1024 * 1024)  # 51 MB — sobre el límite
-        fake_video.write_bytes(large_content)
+        fake_video.write_bytes(b"0" * (51 * 1024 * 1024))
 
         update = _make_update("https://www.tiktok.com/@user/video/123")
         status_msg = AsyncMock()
@@ -164,7 +241,7 @@ class TestHandleLink:
         context = _make_context()
 
         with patch("bot.asyncio.get_running_loop") as mock_loop:
-            mock_loop.return_value.run_in_executor = AsyncMock(return_value=str(fake_video))
+            mock_loop.return_value.run_in_executor = _mock_executor(download_result=str(fake_video))
             await handle_link(update, context)
 
         update.message.reply_document.assert_called_once()
@@ -178,13 +255,13 @@ class TestHandleLink:
         context = _make_context()
 
         with patch("bot.asyncio.get_running_loop") as mock_loop:
-            mock_loop.return_value.run_in_executor = AsyncMock(
-                side_effect=yt_dlp.DownloadError("ERROR: This video is private")
+            mock_loop.return_value.run_in_executor = _mock_executor(
+                download_error=yt_dlp.DownloadError("ERROR: This video is private")
             )
             await handle_link(update, context)
 
-        status_msg.edit_text.assert_called_once()
-        assert "🔒" in status_msg.edit_text.call_args[0][0]
+        last_text = status_msg.edit_text.call_args_list[-1][0][0]
+        assert "🔒" in last_text
 
     async def test_not_found_error_message(self):
         update = _make_update("https://www.facebook.com/watch?v=999")
@@ -193,13 +270,13 @@ class TestHandleLink:
         context = _make_context()
 
         with patch("bot.asyncio.get_running_loop") as mock_loop:
-            mock_loop.return_value.run_in_executor = AsyncMock(
-                side_effect=yt_dlp.DownloadError("ERROR: 404 not found")
+            mock_loop.return_value.run_in_executor = _mock_executor(
+                download_error=yt_dlp.DownloadError("ERROR: 404 not found")
             )
             await handle_link(update, context)
 
-        status_msg.edit_text.assert_called_once()
-        assert "🔍" in status_msg.edit_text.call_args[0][0]
+        last_text = status_msg.edit_text.call_args_list[-1][0][0]
+        assert "🔍" in last_text
 
     async def test_generic_download_error_message(self):
         update = _make_update("https://youtu.be/abc123")
@@ -208,13 +285,13 @@ class TestHandleLink:
         context = _make_context()
 
         with patch("bot.asyncio.get_running_loop") as mock_loop:
-            mock_loop.return_value.run_in_executor = AsyncMock(
-                side_effect=yt_dlp.DownloadError("ERROR: something went wrong")
+            mock_loop.return_value.run_in_executor = _mock_executor(
+                download_error=yt_dlp.DownloadError("ERROR: something went wrong")
             )
             await handle_link(update, context)
 
-        status_msg.edit_text.assert_called_once()
-        assert "⚠️" in status_msg.edit_text.call_args[0][0]
+        last_text = status_msg.edit_text.call_args_list[-1][0][0]
+        assert "⚠️" in last_text
 
     async def test_unexpected_exception_shows_generic_message(self):
         update = _make_update("https://youtu.be/abc123")
@@ -223,13 +300,12 @@ class TestHandleLink:
         context = _make_context()
 
         with patch("bot.asyncio.get_running_loop") as mock_loop:
-            mock_loop.return_value.run_in_executor = AsyncMock(
-                side_effect=RuntimeError("unexpected")
+            mock_loop.return_value.run_in_executor = _mock_executor(
+                download_error=RuntimeError("unexpected")
             )
             await handle_link(update, context)
-
-        status_msg.edit_text.assert_called_once()
-        assert "💥" in status_msg.edit_text.call_args[0][0]
+        last_text = status_msg.edit_text.call_args_list[-1][0][0]
+        assert "💥" in last_text
 
     async def test_temp_file_cleaned_up_on_error(self, tmp_path):
         fake_video = tmp_path / "video.mp4"
@@ -242,7 +318,7 @@ class TestHandleLink:
         update.message.reply_video = AsyncMock(side_effect=RuntimeError("send failed"))
 
         with patch("bot.asyncio.get_running_loop") as mock_loop:
-            mock_loop.return_value.run_in_executor = AsyncMock(return_value=str(fake_video))
+            mock_loop.return_value.run_in_executor = _mock_executor(download_result=str(fake_video))
             await handle_link(update, context)
 
         assert not fake_video.exists()
