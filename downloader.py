@@ -102,7 +102,54 @@ def get_video_info(url: str) -> dict:
         "title": info.get("title") or "Sin título",
         "duration": info.get("duration"),
         "filesize": _estimate_filesize(info),
+        "is_music": bool(info.get("track") or info.get("artist")),
     }
+
+
+def download_audio(url: str, on_progress: Callable[[str], None] | None = None) -> tuple[str, dict]:
+    """
+    Descarga solo el audio en MP3.
+    Devuelve (ruta_mp3, {"title": str, "artist": str | None}).
+    Lanza yt_dlp.DownloadError si algo falla.
+    """
+    output_template = _make_output_path()
+
+    def _progress_hook(d: dict) -> None:
+        if on_progress:
+            on_progress(d.get("status", ""))
+
+    ydl_opts = {
+        "outtmpl": output_template,
+        "format": "bestaudio/best",
+        "postprocessors": [{
+            "key": "FFmpegExtractAudio",
+            "preferredcodec": "mp3",
+            "preferredquality": "192",
+        }],
+        "extractor_args": {"youtube": {"skip": ["dash", "hls"]}},
+        "quiet": True,
+        "no_warnings": True,
+        "max_filesize": MAX_DOCUMENT_SIZE_BYTES,
+        "retries": 3,
+        "fragment_retries": 3,
+        "progress_hooks": [_progress_hook],
+        "http_headers": {
+            "User-Agent": (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/124.0.0.0 Safari/537.36"
+            )
+        },
+    }
+
+    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+        info = ydl.extract_info(url, download=True)
+        filename = ydl.prepare_filename(info)
+        filename = filename.rsplit(".", 1)[0] + ".mp3"
+
+    title = info.get("track") or info.get("title") or "Sin título"
+    artist = info.get("artist") or info.get("creator") or None
+    return filename, {"title": title, "artist": artist}
 
 
 def get_video_dimensions(filepath: str) -> tuple[int, int]:
