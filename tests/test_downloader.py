@@ -4,7 +4,7 @@ import pytest
 import yt_dlp
 from unittest.mock import MagicMock, patch, call
 
-from downloader import download_video, _make_output_path, get_video_dimensions, get_video_info, _estimate_filesize
+from downloader import download_video, download_audio, _make_output_path, get_video_dimensions, get_video_info, _estimate_filesize
 from config import DOWNLOAD_DIR
 
 
@@ -256,3 +256,82 @@ class TestGetVideoDimensions:
 
         assert w == 0
         assert h == 0
+
+
+class TestDownloadAudio:
+    def _mock_ydl(self, filename: str, info: dict) -> MagicMock:
+        ydl = MagicMock()
+        ydl.extract_info.return_value = info
+        ydl.prepare_filename.return_value = filename
+        return ydl
+
+    def _make_cm(self, ydl: MagicMock) -> MagicMock:
+        cm = MagicMock()
+        cm.__enter__ = MagicMock(return_value=ydl)
+        cm.__exit__ = MagicMock(return_value=False)
+        return cm
+
+    def test_returns_filepath_and_metadata(self, tmp_path):
+        fake_mp3 = tmp_path / "audio.mp3"
+        fake_mp3.write_bytes(b"data")
+        info = {"title": "My Song", "track": "My Song", "artist": "Cool Artist"}
+        ydl_mock = self._mock_ydl(str(tmp_path / "audio.webm"), info)
+        cm = self._make_cm(ydl_mock)
+
+        with patch("downloader.DOWNLOAD_DIR", str(tmp_path)), \
+             patch("yt_dlp.YoutubeDL", return_value=cm):
+            filepath, meta = download_audio("https://youtu.be/abc")
+
+        assert filepath.endswith(".mp3")
+        assert meta["title"] == "My Song"
+        assert meta["artist"] == "Cool Artist"
+
+    def test_uses_track_field_over_title(self, tmp_path):
+        fake_mp3 = tmp_path / "audio.mp3"
+        fake_mp3.write_bytes(b"data")
+        info = {"title": "YouTube Title", "track": "Album Track Name", "artist": "Artist"}
+        ydl_mock = self._mock_ydl(str(tmp_path / "audio.webm"), info)
+        cm = self._make_cm(ydl_mock)
+
+        with patch("downloader.DOWNLOAD_DIR", str(tmp_path)), \
+             patch("yt_dlp.YoutubeDL", return_value=cm):
+            _, meta = download_audio("https://youtu.be/abc")
+
+        assert meta["title"] == "Album Track Name"
+
+    def test_falls_back_to_title_when_no_track(self, tmp_path):
+        fake_mp3 = tmp_path / "audio.mp3"
+        fake_mp3.write_bytes(b"data")
+        info = {"title": "Video Title", "track": None, "artist": None}
+        ydl_mock = self._mock_ydl(str(tmp_path / "audio.webm"), info)
+        cm = self._make_cm(ydl_mock)
+
+        with patch("downloader.DOWNLOAD_DIR", str(tmp_path)), \
+             patch("yt_dlp.YoutubeDL", return_value=cm):
+            _, meta = download_audio("https://youtu.be/abc")
+
+        assert meta["title"] == "Video Title"
+        assert meta["artist"] is None
+
+    def test_artist_falls_back_to_creator(self, tmp_path):
+        fake_mp3 = tmp_path / "audio.mp3"
+        fake_mp3.write_bytes(b"data")
+        info = {"title": "Song", "track": None, "artist": None, "creator": "Channel Name"}
+        ydl_mock = self._mock_ydl(str(tmp_path / "audio.webm"), info)
+        cm = self._make_cm(ydl_mock)
+
+        with patch("downloader.DOWNLOAD_DIR", str(tmp_path)), \
+             patch("yt_dlp.YoutubeDL", return_value=cm):
+            _, meta = download_audio("https://youtu.be/abc")
+
+        assert meta["artist"] == "Channel Name"
+
+    def test_propagates_download_error(self, tmp_path):
+        ydl_mock = MagicMock()
+        ydl_mock.extract_info.side_effect = yt_dlp.DownloadError("ERROR: 403")
+        cm = self._make_cm(ydl_mock)
+
+        with patch("downloader.DOWNLOAD_DIR", str(tmp_path)), \
+             patch("yt_dlp.YoutubeDL", return_value=cm):
+            with pytest.raises(yt_dlp.DownloadError):
+                download_audio("https://youtu.be/bad")

@@ -4,7 +4,7 @@ import pytest
 import yt_dlp
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from bot import _is_supported_url, cmd_start, cmd_help, handle_link, _make_progress_callback
+from bot import _is_supported_url, _is_youtube_url, cmd_start, cmd_help, handle_link, handle_format_choice, _make_progress_callback
 
 
 @pytest.fixture(autouse=True)
@@ -166,7 +166,7 @@ class TestPreflight:
         fake_video = tmp_path / "video.mp4"
         fake_video.write_bytes(b"data")
 
-        update = _make_update("https://youtu.be/abc123")
+        update = _make_update("https://www.tiktok.com/@user/video/123")
         status_msg = AsyncMock()
         update.message.reply_text = AsyncMock(return_value=status_msg)
         context = _make_context()
@@ -178,13 +178,13 @@ class TestPreflight:
             )
             await handle_link(update, context)
 
-        update.message.reply_video.assert_called_once()
+        status_msg.reply_video.assert_called_once()
 
     async def test_proceeds_when_size_within_limit(self, tmp_path):
         fake_video = tmp_path / "video.mp4"
         fake_video.write_bytes(b"data")
 
-        update = _make_update("https://youtu.be/abc123")
+        update = _make_update("https://www.tiktok.com/@user/video/123")
         status_msg = AsyncMock()
         update.message.reply_text = AsyncMock(return_value=status_msg)
         context = _make_context()
@@ -196,7 +196,7 @@ class TestPreflight:
             )
             await handle_link(update, context)
 
-        update.message.reply_video.assert_called_once()
+        status_msg.reply_video.assert_called_once()
 
 
 # ---------------------------------------------------------------------------
@@ -226,8 +226,8 @@ class TestHandleLink:
             mock_loop.return_value.run_in_executor = _mock_executor(download_result=str(fake_video))
             await handle_link(update, context)
 
-        update.message.reply_video.assert_called_once()
-        update.message.reply_document.assert_not_called()
+        status_msg.reply_video.assert_called_once()
+        status_msg.reply_document.assert_not_called()
         status_msg.delete.assert_called_once()
         assert not fake_video.exists()
 
@@ -244,8 +244,8 @@ class TestHandleLink:
             mock_loop.return_value.run_in_executor = _mock_executor(download_result=str(fake_video))
             await handle_link(update, context)
 
-        update.message.reply_document.assert_called_once()
-        update.message.reply_video.assert_not_called()
+        status_msg.reply_document.assert_called_once()
+        status_msg.reply_video.assert_not_called()
         assert not fake_video.exists()
 
     async def test_private_video_error_message(self):
@@ -279,7 +279,7 @@ class TestHandleLink:
         assert "🔍" in last_text
 
     async def test_generic_download_error_message(self):
-        update = _make_update("https://youtu.be/abc123")
+        update = _make_update("https://www.tiktok.com/@user/video/123")
         status_msg = AsyncMock()
         update.message.reply_text = AsyncMock(return_value=status_msg)
         context = _make_context()
@@ -294,7 +294,7 @@ class TestHandleLink:
         assert "⚠️" in last_text
 
     async def test_unexpected_exception_shows_generic_message(self):
-        update = _make_update("https://youtu.be/abc123")
+        update = _make_update("https://www.tiktok.com/@user/video/123")
         status_msg = AsyncMock()
         update.message.reply_text = AsyncMock(return_value=status_msg)
         context = _make_context()
@@ -311,11 +311,11 @@ class TestHandleLink:
         fake_video = tmp_path / "video.mp4"
         fake_video.write_bytes(b"data")
 
-        update = _make_update("https://youtu.be/abc123")
+        update = _make_update("https://www.tiktok.com/@user/video/123")
         status_msg = AsyncMock()
+        status_msg.reply_video = AsyncMock(side_effect=RuntimeError("send failed"))
         update.message.reply_text = AsyncMock(return_value=status_msg)
         context = _make_context()
-        update.message.reply_video = AsyncMock(side_effect=RuntimeError("send failed"))
 
         with patch("bot.asyncio.get_running_loop") as mock_loop:
             mock_loop.return_value.run_in_executor = _mock_executor(download_result=str(fake_video))
@@ -363,3 +363,170 @@ class TestMakeProgressCallback:
             cb("processing")
             cb("")
         assert mock_rct.call_count == 0
+
+
+# ---------------------------------------------------------------------------
+# _is_youtube_url
+# ---------------------------------------------------------------------------
+
+class TestIsYoutubeUrl:
+    @pytest.mark.parametrize("url", [
+        "https://www.youtube.com/watch?v=abc",
+        "https://youtu.be/abc123",
+        "https://youtube.com/shorts/abc",
+        "https://music.youtube.com/watch?v=abc",
+    ])
+    def test_youtube_urls_detected(self, url):
+        assert _is_youtube_url(url) is True
+
+    @pytest.mark.parametrize("url", [
+        "https://www.tiktok.com/@user/video/123",
+        "https://www.instagram.com/reel/abc/",
+        "https://x.com/user/status/123",
+    ])
+    def test_non_youtube_urls_rejected(self, url):
+        assert _is_youtube_url(url) is False
+
+
+# ---------------------------------------------------------------------------
+# handle_link — YouTube format keyboard
+# ---------------------------------------------------------------------------
+
+class TestYoutubeFormatKeyboard:
+    async def test_shows_keyboard_for_youtube(self):
+        update = _make_update("https://youtu.be/abc123")
+        status_msg = AsyncMock()
+        update.message.reply_text = AsyncMock(return_value=status_msg)
+        context = _make_context()
+
+        with patch("bot.asyncio.get_running_loop") as mock_loop:
+            mock_loop.return_value.run_in_executor = _mock_executor(
+                info={"title": "Test", "filesize": None, "duration": 60, "is_music": False}
+            )
+            await handle_link(update, context)
+
+        status_msg.edit_text.assert_called_once()
+        call_kwargs = status_msg.edit_text.call_args
+        assert "reply_markup" in call_kwargs.kwargs
+
+    async def test_shows_music_note_when_is_music(self):
+        update = _make_update("https://youtu.be/abc123")
+        status_msg = AsyncMock()
+        update.message.reply_text = AsyncMock(return_value=status_msg)
+        context = _make_context()
+
+        with patch("bot.asyncio.get_running_loop") as mock_loop:
+            mock_loop.return_value.run_in_executor = _mock_executor(
+                info={"title": "Song", "filesize": None, "duration": 200, "is_music": True}
+            )
+            await handle_link(update, context)
+
+        text = status_msg.edit_text.call_args[0][0]
+        assert "🎵" in text
+
+    async def test_no_keyboard_for_non_youtube(self, tmp_path):
+        fake_video = tmp_path / "video.mp4"
+        fake_video.write_bytes(b"data")
+
+        update = _make_update("https://www.tiktok.com/@user/video/123")
+        status_msg = AsyncMock()
+        update.message.reply_text = AsyncMock(return_value=status_msg)
+        context = _make_context()
+
+        with patch("bot.asyncio.get_running_loop") as mock_loop:
+            mock_loop.return_value.run_in_executor = _mock_executor(download_result=str(fake_video))
+            await handle_link(update, context)
+
+        status_msg.reply_video.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# handle_format_choice
+# ---------------------------------------------------------------------------
+
+class TestHandleFormatChoice:
+    def _make_callback_query(self, data: str, user_id: int = 1) -> MagicMock:
+        query = MagicMock()
+        query.answer = AsyncMock()
+        query.data = data
+        query.edit_message_text = AsyncMock()
+        query.edit_message_reply_markup = AsyncMock()
+        query.message = AsyncMock()
+        query.message.edit_text = AsyncMock()
+        query.message.reply_video = AsyncMock()
+        query.message.reply_audio = AsyncMock()
+        query.message.reply_document = AsyncMock()
+        query.message.delete = AsyncMock()
+
+        update = MagicMock()
+        update.callback_query = query
+        update.effective_user = MagicMock()
+        update.effective_user.id = user_id
+        return update
+
+    async def test_expired_pending_shows_message(self):
+        update = self._make_callback_query("fmt:video", user_id=999)
+        context = _make_context()
+
+        await handle_format_choice(update, context)
+
+        update.callback_query.edit_message_text.assert_called_once()
+        assert "expiró" in update.callback_query.edit_message_text.call_args[0][0]
+
+    async def test_video_choice_sends_video(self, tmp_path):
+        fake_video = tmp_path / "video.mp4"
+        fake_video.write_bytes(b"data")
+
+        update = self._make_callback_query("fmt:video", user_id=42)
+        context = _make_context()
+
+        import bot
+        bot._pending[42] = {"url": "https://youtu.be/abc", "status_msg": update.callback_query.message}
+
+        with patch("bot.asyncio.get_running_loop") as mock_loop:
+            mock_loop.return_value.run_in_executor = AsyncMock(return_value=str(fake_video))
+            await handle_format_choice(update, context)
+
+        update.callback_query.message.reply_video.assert_called_once()
+
+    async def test_audio_choice_sends_audio(self, tmp_path):
+        fake_audio = tmp_path / "audio.mp3"
+        fake_audio.write_bytes(b"data")
+
+        update = self._make_callback_query("fmt:audio", user_id=43)
+        context = _make_context()
+
+        import bot
+        bot._pending[43] = {"url": "https://youtu.be/abc", "status_msg": update.callback_query.message}
+
+        with patch("bot.asyncio.get_running_loop") as mock_loop:
+            mock_loop.return_value.run_in_executor = AsyncMock(
+                return_value=(str(fake_audio), {"title": "Song Title", "artist": "Cool Artist"})
+            )
+            await handle_format_choice(update, context)
+
+        update.callback_query.message.reply_audio.assert_called_once()
+        call_kwargs = update.callback_query.message.reply_audio.call_args.kwargs
+        assert call_kwargs["title"] == "Song Title"
+        assert call_kwargs["performer"] == "Cool Artist"
+        assert call_kwargs["filename"] == "Cool Artist - Song Title.mp3"
+
+    async def test_audio_choice_filename_without_artist(self, tmp_path):
+        fake_audio = tmp_path / "audio.mp3"
+        fake_audio.write_bytes(b"data")
+
+        update = self._make_callback_query("fmt:audio", user_id=44)
+        context = _make_context()
+
+        import bot
+        bot._pending[44] = {"url": "https://youtu.be/abc", "status_msg": update.callback_query.message}
+
+        with patch("bot.asyncio.get_running_loop") as mock_loop:
+            mock_loop.return_value.run_in_executor = AsyncMock(
+                return_value=(str(fake_audio), {"title": "Just A Title", "artist": None})
+            )
+            await handle_format_choice(update, context)
+
+        call_kwargs = update.callback_query.message.reply_audio.call_args.kwargs
+        assert call_kwargs["filename"] == "Just A Title.mp3"
+        assert call_kwargs["performer"] is None
