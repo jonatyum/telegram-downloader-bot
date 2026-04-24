@@ -7,9 +7,9 @@ import yt_dlp
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, ContextTypes, filters
 
-from config import BOT_TOKEN, MAX_TELEGRAM_SIZE_BYTES, SUPPORTED_DOMAINS
+from config import BOT_TOKEN, MAX_TELEGRAM_SIZE_BYTES, MAX_PREFLIGHT_SIZE_BYTES, SUPPORTED_DOMAINS
 from database import init_db, upsert_user
-from downloader import download_video, get_video_dimensions
+from downloader import download_video, get_video_dimensions, get_video_info
 from rate_limiter import rate_limiter
 
 logging.basicConfig(
@@ -95,11 +95,25 @@ async def handle_link(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
     upsert_user(user.id, user.username, user.first_name)
 
-    status_msg = await update.message.reply_text("⏳ Descargando... un momento")
+    status_msg = await update.message.reply_text("🔍 Verificando...")
 
     filepath = None
     try:
         loop = asyncio.get_running_loop()
+
+        # Preflight: obtener metadatos sin descargar
+        info = await loop.run_in_executor(None, get_video_info, url)
+        filesize = info.get("filesize")
+
+        if filesize and filesize > MAX_PREFLIGHT_SIZE_BYTES:
+            size_mb = filesize / (1024 * 1024)
+            limit_mb = MAX_PREFLIGHT_SIZE_BYTES // (1024 * 1024)
+            await status_msg.edit_text(
+                f"❌ El video pesa ~{size_mb:.0f} MB y supera el límite de {limit_mb} MB."
+            )
+            return
+
+        await status_msg.edit_text("⬇️ Descargando...")
         progress_cb = _make_progress_callback(loop, status_msg)
         filepath = await loop.run_in_executor(None, download_video, url, progress_cb)
 
