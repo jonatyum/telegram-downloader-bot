@@ -30,4 +30,6 @@ MAX_PREFLIGHT_SIZE_BYTES = 100 * 1024 * 1024  # rechazar videos estimados > 100 
 RATE_LIMIT_REQUESTS = 5   # máximo de descargas
 RATE_LIMIT_WINDOW = 60    # en segundos (ventana deslizante)
 
+MAX_CONCURRENT_DOWNLOADS = 3  # descargas simultáneas máximas
+
 DB_PATH = os.path.join(os.path.dirname(__file__), "bot.db")

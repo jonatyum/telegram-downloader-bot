@@ -152,6 +152,27 @@ def download_audio(url: str, on_progress: Callable[[str], None] | None = None) -
     return filename, {"title": title, "artist": artist}
 
 
+def get_audio_info(url: str) -> dict:
+    """Obtiene metadatos del audio sin descargarlo. Retorna filesize (bytes, puede ser None)."""
+    opts = {
+        "quiet": True,
+        "no_warnings": True,
+        "format": "bestaudio/best",
+        "http_headers": {
+            "User-Agent": (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/124.0.0.0 Safari/537.36"
+            )
+        },
+    }
+    with yt_dlp.YoutubeDL(opts) as ydl:
+        info = ydl.extract_info(url, download=False)
+    return {
+        "filesize": info.get("filesize") or info.get("filesize_approx"),
+    }
+
+
 def get_video_dimensions(filepath: str) -> tuple[int, int]:
     """Devuelve (width, height) del video usando ffprobe. Retorna (0, 0) si falla."""
     try:

@@ -7,9 +7,9 @@ import yt_dlp
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, CallbackQueryHandler, ContextTypes, filters
 
-from config import BOT_TOKEN, MAX_TELEGRAM_SIZE_BYTES, MAX_PREFLIGHT_SIZE_BYTES, SUPPORTED_DOMAINS
+from config import BOT_TOKEN, MAX_TELEGRAM_SIZE_BYTES, MAX_PREFLIGHT_SIZE_BYTES, SUPPORTED_DOMAINS, MAX_CONCURRENT_DOWNLOADS
 from database import init_db, upsert_user
-from downloader import download_video, download_audio, get_video_dimensions, get_video_info
+from downloader import download_video, download_audio, get_video_dimensions, get_video_info, get_audio_info
 from rate_limiter import rate_limiter
 
 logging.basicConfig(
@@ -20,6 +20,9 @@ logger = logging.getLogger(__name__)
 
 # URL pendiente por usuario hasta que elija formato (video o audio)
 _pending: dict[int, dict] = {}
+
+# Límite de descargas simultáneas
+_download_semaphore = asyncio.Semaphore(MAX_CONCURRENT_DOWNLOADS)
 
 _YOUTUBE_DOMAINS = {"youtu.be", "youtube.com", "music.youtube.com"}
 
@@ -115,15 +118,28 @@ async def handle_link(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         info = await loop.run_in_executor(None, get_video_info, url)
         filesize = info.get("filesize")
 
+        is_youtube = _is_youtube_url(url)
+
         if filesize and filesize > MAX_PREFLIGHT_SIZE_BYTES:
             size_mb = filesize / (1024 * 1024)
             limit_mb = MAX_PREFLIGHT_SIZE_BYTES // (1024 * 1024)
-            await status_msg.edit_text(
-                f"❌ El video pesa ~{size_mb:.0f} MB y supera el límite de {limit_mb} MB."
-            )
+            if is_youtube:
+                _pending[user.id] = {"url": url, "status_msg": status_msg}
+                keyboard = InlineKeyboardMarkup([[
+                    InlineKeyboardButton("🎵 Audio (MP3)", callback_data="fmt:audio"),
+                ]])
+                await status_msg.edit_text(
+                    f"⚠️ El video pesa ~{size_mb:.0f} MB y supera el límite de {limit_mb} MB.\n"
+                    "¿Lo descargo como MP3?",
+                    reply_markup=keyboard,
+                )
+            else:
+                await status_msg.edit_text(
+                    f"❌ El video pesa ~{size_mb:.0f} MB y supera el límite de {limit_mb} MB."
+                )
             return
 
-        if _is_youtube_url(url):
+        if is_youtube:
             _pending[user.id] = {"url": url, "status_msg": status_msg}
             note = "🎵 Parece una canción." if info.get("is_music") else ""
             keyboard = InlineKeyboardMarkup([[
@@ -163,6 +179,17 @@ async def handle_format_choice(update: Update, context: ContextTypes.DEFAULT_TYP
 
     loop = asyncio.get_running_loop()
     try:
+        if fmt == "audio":
+            await status_msg.edit_text("🔍 Verificando...")
+            audio_info = await loop.run_in_executor(None, get_audio_info, url)
+            audio_size = audio_info.get("filesize")
+            if audio_size and audio_size > MAX_PREFLIGHT_SIZE_BYTES:
+                size_mb = audio_size / (1024 * 1024)
+                limit_mb = MAX_PREFLIGHT_SIZE_BYTES // (1024 * 1024)
+                await status_msg.edit_text(
+                    f"❌ El audio pesa ~{size_mb:.0f} MB y supera el límite de {limit_mb} MB."
+                )
+                return
         await _do_download(url, status_msg, loop, fmt=fmt)
     except yt_dlp.DownloadError as e:
         logger.warning("DownloadError para %s: %s", url, e)
@@ -173,48 +200,51 @@ async def handle_format_choice(update: Update, context: ContextTypes.DEFAULT_TYP
 
 
 async def _do_download(url: str, status_msg, loop, fmt: str) -> None:
-    await status_msg.edit_text("⬇️ Descargando...")
-    progress_cb = _make_progress_callback(loop, status_msg)
+    await status_msg.edit_text("⏳ En cola...")
     filepath = None
 
-    try:
-        if fmt == "audio":
-            filepath, meta = await loop.run_in_executor(None, download_audio, url, progress_cb)
-            title = meta["title"]
-            artist = meta.get("artist")
-            audio_filename = f"{artist} - {title}.mp3" if artist else f"{title}.mp3"
-            await status_msg.edit_text("📤 Enviando audio...")
-            with open(filepath, "rb") as f:
-                await status_msg.reply_audio(
-                    audio=f,
-                    title=title,
-                    performer=artist,
-                    filename=audio_filename,
-                )
-        else:
-            filepath = await loop.run_in_executor(None, download_video, url, progress_cb)
-            file_size = os.path.getsize(filepath)
-            width, height = get_video_dimensions(filepath)
+    async with _download_semaphore:
+        await status_msg.edit_text("⬇️ Descargando...")
+        progress_cb = _make_progress_callback(loop, status_msg)
 
-            if file_size > MAX_TELEGRAM_SIZE_BYTES:
-                await status_msg.edit_text("📦 El video es grande, enviando como documento...")
+        try:
+            if fmt == "audio":
+                filepath, meta = await loop.run_in_executor(None, download_audio, url, progress_cb)
+                title = meta["title"]
+                artist = meta.get("artist")
+                audio_filename = f"{artist} - {title}.mp3" if artist else f"{title}.mp3"
+                await status_msg.edit_text("📤 Enviando audio...")
                 with open(filepath, "rb") as f:
-                    await status_msg.reply_document(document=f)
-            else:
-                await status_msg.edit_text("📤 Enviando video...")
-                with open(filepath, "rb") as f:
-                    await status_msg.reply_video(
-                        video=f,
-                        width=width or None,
-                        height=height or None,
-                        supports_streaming=True,
+                    await status_msg.reply_audio(
+                        audio=f,
+                        title=title,
+                        performer=artist,
+                        filename=audio_filename,
                     )
+            else:
+                filepath = await loop.run_in_executor(None, download_video, url, progress_cb)
+                file_size = os.path.getsize(filepath)
+                width, height = get_video_dimensions(filepath)
 
-        await status_msg.delete()
+                if file_size > MAX_TELEGRAM_SIZE_BYTES:
+                    await status_msg.edit_text("📦 El video es grande, enviando como documento...")
+                    with open(filepath, "rb") as f:
+                        await status_msg.reply_document(document=f)
+                else:
+                    await status_msg.edit_text("📤 Enviando video...")
+                    with open(filepath, "rb") as f:
+                        await status_msg.reply_video(
+                            video=f,
+                            width=width or None,
+                            height=height or None,
+                            supports_streaming=True,
+                        )
 
-    finally:
-        if filepath and os.path.exists(filepath):
-            os.remove(filepath)
+            await status_msg.delete()
+
+        finally:
+            if filepath and os.path.exists(filepath):
+                os.remove(filepath)
 
 
 def _download_error_msg(reason: str) -> str:
