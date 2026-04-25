@@ -75,9 +75,9 @@ _DEFAULT_INFO = {"title": "Test", "filesize": None, "duration": 10}
 
 
 def _mock_executor(download_result=None, download_error=None, info=None):
-    """Devuelve un AsyncMock que simula las dos llamadas a run_in_executor:
+    """Simula las dos llamadas a run_in_executor en handle_link:
     1ª llamada (preflight get_video_info) → info dict
-    2ª llamada (download_video)           → download_result o lanza download_error
+    2ª llamada (download_video/audio)     → download_result o lanza download_error
     """
     preflight = info or _DEFAULT_INFO
 
@@ -85,6 +85,24 @@ def _mock_executor(download_result=None, download_error=None, info=None):
         if not hasattr(_side_effect, "_called"):
             _side_effect._called = True
             return preflight
+        if download_error:
+            raise download_error
+        return download_result
+
+    return AsyncMock(side_effect=_side_effect)
+
+
+def _mock_audio_executor(audio_info=None, download_result=None, download_error=None):
+    """Simula las dos llamadas a run_in_executor en handle_format_choice con fmt=audio:
+    1ª llamada (get_audio_info) → audio_info dict
+    2ª llamada (download_audio) → download_result o lanza download_error
+    """
+    _audio_info = audio_info or {"filesize": None}
+
+    async def _side_effect(executor, func, *args):
+        if not hasattr(_side_effect, "_called"):
+            _side_effect._called = True
+            return _audio_info
         if download_error:
             raise download_error
         return download_result
@@ -147,8 +165,8 @@ class TestCmdHelp:
 # ---------------------------------------------------------------------------
 
 class TestPreflight:
-    async def test_rejects_video_over_limit(self):
-        update = _make_update("https://youtu.be/abc123")
+    async def test_non_youtube_over_limit_shows_error(self):
+        update = _make_update("https://www.instagram.com/reel/abc/")
         status_msg = AsyncMock()
         update.message.reply_text = AsyncMock(return_value=status_msg)
         context = _make_context()
@@ -161,6 +179,24 @@ class TestPreflight:
         status_msg.edit_text.assert_called_once()
         assert "❌" in status_msg.edit_text.call_args[0][0]
         assert "150" in status_msg.edit_text.call_args[0][0]
+
+    async def test_youtube_over_limit_shows_mp3_keyboard(self):
+        update = _make_update("https://youtu.be/abc123")
+        status_msg = AsyncMock()
+        update.message.reply_text = AsyncMock(return_value=status_msg)
+        context = _make_context()
+
+        large_info = {"title": "Big video", "duration": 600, "filesize": 150 * 1024 * 1024}
+        with patch("bot.asyncio.get_running_loop") as mock_loop:
+            mock_loop.return_value.run_in_executor = _mock_executor(info=large_info)
+            await handle_link(update, context)
+
+        status_msg.edit_text.assert_called_once()
+        call_kwargs = status_msg.edit_text.call_args
+        text = call_kwargs[0][0]
+        assert "⚠️" in text
+        assert "150" in text
+        assert "reply_markup" in call_kwargs.kwargs
 
     async def test_proceeds_when_size_unknown(self, tmp_path):
         fake_video = tmp_path / "video.mp4"
@@ -322,6 +358,68 @@ class TestHandleLink:
             await handle_link(update, context)
 
         assert not fake_video.exists()
+
+
+# ---------------------------------------------------------------------------
+# Concurrent download limit
+# ---------------------------------------------------------------------------
+
+class TestConcurrentDownloadLimit:
+    async def test_shows_queue_message_before_download(self, tmp_path):
+        fake_video = tmp_path / "video.mp4"
+        fake_video.write_bytes(b"data")
+
+        update = _make_update("https://www.tiktok.com/@user/video/123")
+        status_msg = AsyncMock()
+        update.message.reply_text = AsyncMock(return_value=status_msg)
+        context = _make_context()
+
+        with patch("bot.asyncio.get_running_loop") as mock_loop:
+            mock_loop.return_value.run_in_executor = _mock_executor(download_result=str(fake_video))
+            await handle_link(update, context)
+
+        all_texts = [call[0][0] for call in status_msg.edit_text.call_args_list]
+        assert any("⏳" in t for t in all_texts)
+
+    async def test_blocks_when_semaphore_full(self, tmp_path):
+        """Una petición emite 'En cola' y queda bloqueada si el semáforo está lleno."""
+        import asyncio as _asyncio
+        import bot
+
+        fake_video = tmp_path / "video.mp4"
+        fake_video.write_bytes(b"data")
+
+        queue_texts: list[str] = []
+        update = _make_update("https://www.tiktok.com/@user/video/123")
+        status_msg = AsyncMock()
+
+        async def track_edit(text, **kwargs):
+            queue_texts.append(text)
+
+        status_msg.edit_text = AsyncMock(side_effect=track_edit)
+        update.message.reply_text = AsyncMock(return_value=status_msg)
+
+        original = bot._download_semaphore
+        bot._download_semaphore = _asyncio.Semaphore(0)  # todos los slots ocupados
+
+        try:
+            with patch("bot.asyncio.get_running_loop") as mock_loop:
+                mock_loop.return_value.run_in_executor = _mock_executor(download_result=str(fake_video))
+                task = _asyncio.create_task(handle_link(update, _make_context()))
+                # Damos varios ciclos al event loop para que el task llegue al semáforo
+                for _ in range(10):
+                    await _asyncio.sleep(0)
+
+            # El task debe estar bloqueado esperando el semáforo
+            assert not task.done()
+            assert any("⏳" in t for t in queue_texts)
+        finally:
+            bot._download_semaphore = original
+            task.cancel()
+            try:
+                await task
+            except _asyncio.CancelledError:
+                pass
 
 
 # ---------------------------------------------------------------------------
@@ -500,8 +598,9 @@ class TestHandleFormatChoice:
         bot._pending[43] = {"url": "https://youtu.be/abc", "status_msg": update.callback_query.message}
 
         with patch("bot.asyncio.get_running_loop") as mock_loop:
-            mock_loop.return_value.run_in_executor = AsyncMock(
-                return_value=(str(fake_audio), {"title": "Song Title", "artist": "Cool Artist"})
+            mock_loop.return_value.run_in_executor = _mock_audio_executor(
+                audio_info={"filesize": None},
+                download_result=(str(fake_audio), {"title": "Song Title", "artist": "Cool Artist"}),
             )
             await handle_format_choice(update, context)
 
@@ -522,11 +621,30 @@ class TestHandleFormatChoice:
         bot._pending[44] = {"url": "https://youtu.be/abc", "status_msg": update.callback_query.message}
 
         with patch("bot.asyncio.get_running_loop") as mock_loop:
-            mock_loop.return_value.run_in_executor = AsyncMock(
-                return_value=(str(fake_audio), {"title": "Just A Title", "artist": None})
+            mock_loop.return_value.run_in_executor = _mock_audio_executor(
+                audio_info={"filesize": None},
+                download_result=(str(fake_audio), {"title": "Just A Title", "artist": None}),
             )
             await handle_format_choice(update, context)
 
         call_kwargs = update.callback_query.message.reply_audio.call_args.kwargs
         assert call_kwargs["filename"] == "Just A Title.mp3"
         assert call_kwargs["performer"] is None
+
+    async def test_audio_over_limit_shows_error(self):
+        update = self._make_callback_query("fmt:audio", user_id=45)
+        context = _make_context()
+
+        import bot
+        bot._pending[45] = {"url": "https://youtu.be/abc", "status_msg": update.callback_query.message}
+
+        with patch("bot.asyncio.get_running_loop") as mock_loop:
+            mock_loop.return_value.run_in_executor = _mock_audio_executor(
+                audio_info={"filesize": 150 * 1024 * 1024},
+            )
+            await handle_format_choice(update, context)
+
+        update.callback_query.message.reply_audio.assert_not_called()
+        last_text = update.callback_query.message.edit_text.call_args_list[-1][0][0]
+        assert "❌" in last_text
+        assert "150" in last_text

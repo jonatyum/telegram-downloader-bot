@@ -4,7 +4,7 @@ import pytest
 import yt_dlp
 from unittest.mock import MagicMock, patch, call
 
-from downloader import download_video, download_audio, _make_output_path, get_video_dimensions, get_video_info, _estimate_filesize
+from downloader import download_video, download_audio, _make_output_path, get_video_dimensions, get_video_info, get_audio_info, _estimate_filesize
 from config import DOWNLOAD_DIR
 
 
@@ -181,6 +181,44 @@ class TestEstimateFilesize:
 
     def test_returns_none_when_no_size(self):
         assert _estimate_filesize({}) is None
+
+
+class TestGetAudioInfo:
+    def _mock_ydl_cm(self, info: dict) -> MagicMock:
+        ydl = MagicMock()
+        ydl.extract_info.return_value = info
+        cm = MagicMock()
+        cm.__enter__ = MagicMock(return_value=ydl)
+        cm.__exit__ = MagicMock(return_value=False)
+        return cm
+
+    def test_returns_filesize(self):
+        cm = self._mock_ydl_cm({"filesize": 8 * 1024 * 1024})
+        with patch("yt_dlp.YoutubeDL", return_value=cm):
+            result = get_audio_info("https://youtu.be/abc")
+        assert result["filesize"] == 8 * 1024 * 1024
+
+    def test_falls_back_to_filesize_approx(self):
+        cm = self._mock_ydl_cm({"filesize": None, "filesize_approx": 5 * 1024 * 1024})
+        with patch("yt_dlp.YoutubeDL", return_value=cm):
+            result = get_audio_info("https://youtu.be/abc")
+        assert result["filesize"] == 5 * 1024 * 1024
+
+    def test_returns_none_when_no_size(self):
+        cm = self._mock_ydl_cm({})
+        with patch("yt_dlp.YoutubeDL", return_value=cm):
+            result = get_audio_info("https://youtu.be/abc")
+        assert result["filesize"] is None
+
+    def test_propagates_download_error(self):
+        ydl = MagicMock()
+        ydl.extract_info.side_effect = yt_dlp.DownloadError("private")
+        cm = MagicMock()
+        cm.__enter__ = MagicMock(return_value=ydl)
+        cm.__exit__ = MagicMock(return_value=False)
+        with patch("yt_dlp.YoutubeDL", return_value=cm):
+            with pytest.raises(yt_dlp.DownloadError):
+                get_audio_info("https://youtu.be/bad")
 
 
 class TestGetVideoInfo:
