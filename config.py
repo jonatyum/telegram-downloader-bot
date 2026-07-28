@@ -63,6 +63,11 @@ RETRY_BACKOFF_SECONDS = 2     # espera entre intentos
 
 ADMIN_CHAT_ID: str | None = os.getenv("ADMIN_CHAT_ID")
 
+# Avisar al admin "Bot iniciado" en cada arranque. En Render free el bot se levanta
+# de cero cada vez que despierta del sleep, así que por defecto está apagado para no
+# spamear. Ponlo a 1 solo si quieres ver cada arranque.
+NOTIFY_ON_START: bool = os.getenv("NOTIFY_ON_START", "").strip().lower() in ("1", "true", "yes", "on")
+
 # Puerto donde escucha el servidor HTTP. Render inyecta PORT automáticamente;
 # HEALTH_PORT se mantiene como fallback para el health server en modo polling.
 PORT: int = int(os.getenv("PORT", os.getenv("HEALTH_PORT", "8080")))
