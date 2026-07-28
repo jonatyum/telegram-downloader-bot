@@ -9,7 +9,7 @@ import yt_dlp
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, BotCommand, BotCommandScopeDefault, BotCommandScopeChat, InputMediaPhoto, InputMediaVideo
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, CallbackQueryHandler, ContextTypes, filters
 
-from config import BOT_TOKEN, MAX_TELEGRAM_SIZE_BYTES, MAX_PREFLIGHT_SIZE_BYTES, SUPPORTED_DOMAINS, MAX_CONCURRENT_DOWNLOADS, ADMIN_CHAT_ID, HEALTH_PORT, MAX_VIDEO_HEIGHT, WEBHOOK_URL, WEBHOOK_SECRET, PORT
+from config import BOT_TOKEN, MAX_TELEGRAM_SIZE_BYTES, MAX_PREFLIGHT_SIZE_BYTES, SUPPORTED_DOMAINS, MAX_CONCURRENT_DOWNLOADS, ADMIN_CHAT_ID, HEALTH_PORT, MAX_VIDEO_HEIGHT, MAX_COMPRESS_HEIGHT, WEBHOOK_URL, WEBHOOK_SECRET, PORT
 from database import init_db, upsert_user, get_all_users, get_stats, get_user_max_resolution, set_user_max_resolution, clear_user_max_resolution
 from downloader import download_video, download_audio, download_song, download_post, compress_video, get_video_dimensions, get_video_info, get_audio_info
 from rate_limiter import rate_limiter
@@ -564,7 +564,7 @@ async def _do_download(url: str, status_msg, loop, fmt: str, user_pref: int | No
                     # Intenta comprimir para poder enviarlo como video reproducible.
                     await status_msg.edit_text("🗜️ El video es grande, comprimiendo...")
                     compressed = await loop.run_in_executor(
-                        None, compress_video, filepath, MAX_TELEGRAM_SIZE_BYTES
+                        None, compress_video, filepath, MAX_TELEGRAM_SIZE_BYTES, MAX_COMPRESS_HEIGHT
                     )
                     if compressed:
                         extra_path = compressed
