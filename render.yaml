@@ -19,5 +19,14 @@ services:
       # Token secreto opcional para validar los webhooks de Telegram
       - key: WEBHOOK_SECRET
         sync: false
+      # --- Límites conservadores para los 512 MB de RAM del plan free ---
+      - key: MAX_CONCURRENT_DOWNLOADS
+        value: "2"
+      - key: MAX_COMPRESS_HEIGHT
+        value: "720"
+      - key: MAX_PREFLIGHT_SIZE_MB
+        value: "50"
+      - key: MAX_DOCUMENT_SIZE_MB
+        value: "50"
     # RENDER_EXTERNAL_URL la inyecta Render automáticamente y el bot la usa como
     # WEBHOOK_URL, así que no hace falta configurarla a mano.

@@ -89,6 +89,48 @@ def _entry_filepath(entry: dict) -> str | None:
     return entry.get("filepath")
 
 
+def _video_codec(filepath: str) -> str | None:
+    """Nombre del códec de video según ffprobe (p. ej. 'h264', 'vp9'), o None si falla."""
+    try:
+        result = subprocess.run(
+            ["ffprobe", "-v", "error", "-select_streams", "v:0",
+             "-show_entries", "stream=codec_name", "-of", "default=nk=1:nw=1", filepath],
+            capture_output=True, text=True, timeout=10,
+        )
+        return result.stdout.strip() or None
+    except Exception:
+        return None
+
+
+def _ensure_h264(filepath: str) -> str:
+    """
+    Red de seguridad de compatibilidad: Telegram (y iOS/QuickTime) no reproducen VP9/AV1
+    dentro de un MP4 — se ve la imagen congelada mientras el audio suena. Si el video no
+    es H.264, lo recodifica a H.264 copiando el audio. No-op si ya es H.264 (el caso normal
+    tras la selección de formato, así que no añade coste en la mayoría de descargas).
+    """
+    codec = _video_codec(filepath)
+    if not codec or codec in ("h264", "avc1"):
+        return filepath
+
+    out = filepath.rsplit(".", 1)[0] + "_h264.mp4"
+    logger.info("Recodificando %s (%s) → H.264 para compatibilidad con Telegram", filepath, codec)
+    r = subprocess.run(
+        ["ffmpeg", "-y", "-i", filepath,
+         "-c:v", "libx264", "-preset", "veryfast", "-crf", "23", "-pix_fmt", "yuv420p",
+         "-c:a", "aac", "-b:a", "128k",
+         "-movflags", "+faststart", out],
+        capture_output=True, timeout=300,
+    )
+    if r.returncode != 0 or not os.path.exists(out):
+        logger.error("_ensure_h264 falló (rc=%s): %s", r.returncode, r.stderr.decode()[:400])
+        if os.path.exists(out):
+            os.remove(out)
+        return filepath
+    os.remove(filepath)
+    return out
+
+
 def _fix_stream_loop(filepath: str) -> str:
     """
     Instagram stores Reels with a looping video (e.g. 31s) paired with full-length audio (e.g. 62s).
@@ -187,8 +229,12 @@ def download_video(url: str, on_progress: Callable[[str], None] | None = None, m
         "format": (
             f"bestvideo[vcodec^=avc][height<={h}][ext=mp4]+bestaudio[ext=m4a]"
             f"/bestvideo[vcodec^=avc][height<={h}]+bestaudio"
-            f"/bestvideo[height<={h}][ext=mp4]+bestaudio[ext=m4a]"
-            f"/best[height<={h}][ext=mp4]/best[height<={h}]/best"
+            # Instagram sirve el H.264 solo como formato combinado; sus streams DASH
+            # son VP9, que Telegram no reproduce (imagen congelada + audio). Preferir el
+            # combinado antes de fusionar un DASH VP9. best[ext=mp4] cubre los combinados
+            # de IG cuya resolución viene sin metadatos (por eso sin filtro de altura).
+            f"/best[height<={h}][ext=mp4]/best[ext=mp4]"
+            f"/bestvideo[height<={h}]+bestaudio/best[height<={h}]/best"
         ),
         "format_sort": ["res", "fps", "vcodec:avc", "ext:mp4", "acodec:m4a"],
         "merge_output_format": "mp4",
@@ -225,6 +271,7 @@ def download_video(url: str, on_progress: Callable[[str], None] | None = None, m
         return filename
 
     filename = _run_with_retry(_do_download)
+    filename = _ensure_h264(filename)
     return _fix_stream_loop(filename)
 
 
@@ -247,9 +294,14 @@ def download_post(
 
     ydl_opts = {
         "outtmpl": output_template,
-        # Formato permisivo: los items de video bajan en la mejor calidad ≤h y los
-        # de imagen caen al único formato disponible (la foto).
-        "format": f"bestvideo[height<={h}]+bestaudio/best[height<={h}]/best",
+        # Formato permisivo: los items de video bajan en la mejor calidad ≤h (preferir
+        # H.264 combinado antes que un DASH VP9, igual que en download_video) y los de
+        # imagen caen al único formato disponible (la foto).
+        "format": (
+            f"bestvideo[vcodec^=avc][height<={h}]+bestaudio[ext=m4a]"
+            f"/best[height<={h}][ext=mp4]/best[ext=mp4]"
+            f"/bestvideo[height<={h}]+bestaudio/best[height<={h}]/best"
+        ),
         "merge_output_format": "mp4",
         "quiet": True,
         "no_warnings": True,
@@ -537,10 +589,12 @@ def _probe_duration(filepath: str) -> float | None:
         return None
 
 
-def compress_video(filepath: str, target_bytes: int) -> str | None:
+def compress_video(filepath: str, target_bytes: int, max_height: int | None = None) -> str | None:
     """
     Re-codifica el video apuntando a un tamaño <= target_bytes para poder enviarlo
     como video reproducible (en vez de como documento).
+    max_height limita la resolución de salida (baja el pico de RAM de libx264 en hosts
+    con poca memoria); nunca hace upscale.
     Devuelve la ruta del archivo comprimido, o None si no se pudo bajar lo suficiente.
     """
     duration = _probe_duration(filepath)
@@ -556,8 +610,12 @@ def compress_video(filepath: str, target_bytes: int) -> str | None:
         return None
 
     out = filepath.rsplit(".", 1)[0] + "_compressed.mp4"
-    cmd = [
-        "ffmpeg", "-y", "-i", filepath,
+    cmd = ["ffmpeg", "-y", "-i", filepath]
+    if max_height:
+        # scale=-2:min(h,ih) → baja a max_height solo si el original es más alto
+        # (-2 mantiene el ancho par y la relación de aspecto). No hace upscale.
+        cmd += ["-vf", f"scale=-2:'min({max_height},ih)'"]
+    cmd += [
         "-c:v", "libx264", "-b:v", str(video_bps),
         "-maxrate", str(int(video_bps * 1.5)),
         "-bufsize", str(int(video_bps * 2)),
