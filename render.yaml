@@ -1,0 +1,23 @@
+services:
+  - type: web
+    name: telegram-downloader-bot
+    runtime: docker
+    plan: free
+    dockerfilePath: ./Dockerfile
+    # Health check: PTB responde en el path del webhook; Render solo necesita
+    # que el puerto esté abierto para considerar el servicio "vivo".
+    envVars:
+      # Token del bot de @BotFather
+      - key: BOT_TOKEN
+        sync: false
+      # Connection string del pooler de Supabase (Transaction mode, puerto 6543)
+      - key: DATABASE_URL
+        sync: false
+      # Chat ID del administrador (opcional)
+      - key: ADMIN_CHAT_ID
+        sync: false
+      # Token secreto opcional para validar los webhooks de Telegram
+      - key: WEBHOOK_SECRET
+        sync: false
+    # RENDER_EXTERNAL_URL la inyecta Render automáticamente y el bot la usa como
+    # WEBHOOK_URL, así que no hace falta configurarla a mano.
