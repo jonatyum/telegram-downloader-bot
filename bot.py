@@ -11,7 +11,7 @@ from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, Cal
 
 from config import BOT_TOKEN, MAX_TELEGRAM_SIZE_BYTES, MAX_PREFLIGHT_SIZE_BYTES, SUPPORTED_DOMAINS, MAX_CONCURRENT_DOWNLOADS, ADMIN_CHAT_ID, HEALTH_PORT, MAX_VIDEO_HEIGHT, MAX_COMPRESS_HEIGHT, WEBHOOK_URL, WEBHOOK_SECRET, PORT
 from database import init_db, upsert_user, get_all_users, get_stats, get_user_max_resolution, set_user_max_resolution, clear_user_max_resolution
-from downloader import download_video, download_audio, download_song, download_post, compress_video, get_video_dimensions, get_video_info, get_audio_info
+from downloader import download_video, download_audio, download_song, download_post, compress_video, get_video_dimensions, get_video_info, get_audio_info, _IMAGE_EXTS
 from rate_limiter import rate_limiter
 
 logging.basicConfig(
@@ -372,8 +372,10 @@ async def _process_url(update: Update, url: str, user_pref: int | None, allow_fo
         loop = asyncio.get_running_loop()
         info = await loop.run_in_executor(None, get_video_info, url, user_pref or MAX_VIDEO_HEIGHT)
 
-        # Post con varios elementos (carrusel): se descarga completo y se envía como álbum.
-        if info.get("is_playlist") and info.get("count", 1) > 1:
+        # Carrusel (varios elementos) o post de una sola foto: se descarga completo y se
+        # envía como álbum/foto. Ambos pasan por la misma ruta (download_post baja las
+        # fotos vía thumbnail y los videos con su formato).
+        if (info.get("is_playlist") and info.get("count", 1) > 1) or info.get("is_image"):
             await _do_carousel(url, status_msg, loop, user_pref)
             return
 
@@ -546,6 +548,15 @@ async def _do_download(url: str, status_msg, loop, fmt: str, user_pref: int | No
                     )
             else:
                 filepath = await loop.run_in_executor(None, download_video, url, progress_cb, effective_height)
+
+                # Post de una sola foto (link de imagen, no video): enviar como foto.
+                if filepath.rsplit(".", 1)[-1].lower() in _IMAGE_EXTS:
+                    await status_msg.edit_text("📤 Enviando foto...")
+                    with open(filepath, "rb") as f:
+                        await status_msg.reply_photo(photo=f)
+                    await status_msg.delete()
+                    return
+
                 file_size = os.path.getsize(filepath)
                 width, height = get_video_dimensions(filepath)
 

@@ -4,6 +4,7 @@ import math
 import os
 import subprocess
 import time
+import urllib.request
 import uuid
 from collections.abc import Callable
 from typing import TypeVar
@@ -89,32 +90,106 @@ def _entry_filepath(entry: dict) -> str | None:
     return entry.get("filepath")
 
 
-def _video_codec(filepath: str) -> str | None:
-    """Nombre del códec de video según ffprobe (p. ej. 'h264', 'vp9'), o None si falla."""
+# User-Agent usado en todas las peticiones a las plataformas.
+_UA = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) "
+    "Chrome/124.0.0.0 Safari/537.36"
+)
+
+
+def _is_image_entry(entry: dict) -> bool:
+    """
+    True si el entry es una foto: Instagram (y otras redes) exponen las imágenes solo
+    como thumbnails, sin formatos de video/audio descargables.
+    """
+    if entry.get("formats") or entry.get("url") or entry.get("requested_downloads"):
+        return False
+    return bool(entry.get("thumbnails"))
+
+
+def _best_thumbnail_url(entry: dict) -> str | None:
+    """URL del thumbnail de mayor resolución (= la foto full-size en posts de imagen)."""
+    thumbs = entry.get("thumbnails") or []
+    if not thumbs:
+        return None
+    # Si hay dimensiones, elige la mayor; si no, yt-dlp los ordena de peor a mejor.
+    if any((t.get("width") or 0) * (t.get("height") or 0) for t in thumbs):
+        best = max(thumbs, key=lambda t: (t.get("width") or 0) * (t.get("height") or 0))
+    else:
+        best = thumbs[-1]
+    return best.get("url")
+
+
+def _download_image(url: str) -> str | None:
+    """Descarga una imagen (foto de post) a DOWNLOAD_DIR. Devuelve la ruta o None si falla."""
+    os.makedirs(DOWNLOAD_DIR, exist_ok=True)
+    out = os.path.join(DOWNLOAD_DIR, f"{uuid.uuid4()}.jpg")
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": _UA})
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            data = resp.read()
+        with open(out, "wb") as f:
+            f.write(data)
+        return out
+    except Exception:
+        logger.exception("No se pudo descargar la imagen del post")
+        if os.path.exists(out):
+            os.remove(out)
+        return None
+
+
+# Pixel formats que Telegram/iOS reproducen sin problema (8-bit 4:2:0). Otros como
+# yuv420p10le (10-bit) o yuv444p producen perfiles H.264 que se ven negros/congelados.
+_COMPATIBLE_PIX_FMTS = {"yuv420p", "yuvj420p", "nv12"}
+
+# ffprobe reporta las imágenes como un "stream de video" con estos códecs. No son
+# video real: recodificarlas convertiría una foto en un MP4 de 1 frame.
+_IMAGE_CODECS = {"mjpeg", "png", "gif", "bmp", "tiff", "webp"}
+
+
+def _video_stream_info(filepath: str) -> tuple[str | None, str | None]:
+    """(codec_name, pix_fmt) del stream de video según ffprobe, o (None, None) si falla."""
     try:
         result = subprocess.run(
             ["ffprobe", "-v", "error", "-select_streams", "v:0",
-             "-show_entries", "stream=codec_name", "-of", "default=nk=1:nw=1", filepath],
+             "-show_entries", "stream=codec_name,pix_fmt", "-of", "default=noprint_wrappers=1", filepath],
             capture_output=True, text=True, timeout=10,
         )
-        return result.stdout.strip() or None
+        info: dict[str, str] = {}
+        for line in result.stdout.splitlines():
+            if "=" in line:
+                k, v = line.split("=", 1)
+                info[k.strip()] = v.strip()
+        return info.get("codec_name") or None, info.get("pix_fmt") or None
     except Exception:
-        return None
+        return None, None
+
+
+def _video_codec(filepath: str) -> str | None:
+    """Nombre del códec de video según ffprobe (p. ej. 'h264', 'vp9'), o None si falla."""
+    return _video_stream_info(filepath)[0]
 
 
 def _ensure_h264(filepath: str) -> str:
     """
     Red de seguridad de compatibilidad: Telegram (y iOS/QuickTime) no reproducen VP9/AV1
-    dentro de un MP4 — se ve la imagen congelada mientras el audio suena. Si el video no
-    es H.264, lo recodifica a H.264 copiando el audio. No-op si ya es H.264 (el caso normal
-    tras la selección de formato, así que no añade coste en la mayoría de descargas).
+    dentro de un MP4 — ni los perfiles H.264 de 10-bit / 4:4:4 — se ve la imagen congelada
+    mientras el audio suena. Si el video no es H.264 8-bit 4:2:0, lo recodifica copiando el
+    audio. No-op en el caso normal (H.264 yuv420p), así que no añade coste en casi ninguna
+    descarga.
     """
-    codec = _video_codec(filepath)
-    if not codec or codec in ("h264", "avc1"):
+    codec, pix_fmt = _video_stream_info(filepath)
+    if not codec or codec in _IMAGE_CODECS:
+        return filepath  # probe falló o es una imagen: no tocar
+    codec_ok = codec in ("h264", "avc1")
+    pix_ok = pix_fmt is None or pix_fmt in _COMPATIBLE_PIX_FMTS
+    if codec_ok and pix_ok:
         return filepath
 
     out = filepath.rsplit(".", 1)[0] + "_h264.mp4"
-    logger.info("Recodificando %s (%s) → H.264 para compatibilidad con Telegram", filepath, codec)
+    logger.info("Recodificando %s (codec=%s pix_fmt=%s) → H.264 yuv420p para compatibilidad con Telegram",
+                filepath, codec, pix_fmt)
     r = subprocess.run(
         ["ffmpeg", "-y", "-i", filepath,
          "-c:v", "libx264", "-preset", "veryfast", "-crf", "23", "-pix_fmt", "yuv420p",
@@ -305,33 +380,51 @@ def download_post(
         "merge_output_format": "mp4",
         "quiet": True,
         "no_warnings": True,
+        # Los items de foto no tienen formato de video: sin esto yt-dlp lanza
+        # "No video formats found!" y aborta el post entero. Las fotos se bajan aparte.
+        "ignore_no_formats_error": True,
         "max_filesize": MAX_DOCUMENT_SIZE_BYTES,
         "retries": 3,
         "fragment_retries": 3,
         "progress_hooks": [_progress_hook],
-        "http_headers": {
-            "User-Agent": (
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                "AppleWebKit/537.36 (KHTML, like Gecko) "
-                "Chrome/124.0.0.0 Safari/537.36"
-            )
-        },
+        "http_headers": {"User-Agent": _UA},
     }
 
     def _do_download() -> list[dict]:
         items: list[dict] = []
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(url, download=True)
+            # Extraer sin descargar: con download=True yt-dlp intenta bajar cada item y
+            # revienta en las fotos (no tienen formato). Bajamos cada item por separado.
+            info = ydl.extract_info(url, download=False)
             entries = info.get("entries") or [info]
             for entry in entries:
                 if not entry:
                     continue
-                path = _entry_filepath(entry) or ydl.prepare_filename(entry)
-                if not os.path.exists(path):
-                    logger.warning("Carousel item missing on disk: %s", path)
+                # Foto: Instagram la expone solo como thumbnail. Bajarla directamente.
+                if _is_image_entry(entry):
+                    thumb = _best_thumbnail_url(entry)
+                    img = _download_image(thumb) if thumb else None
+                    if img:
+                        items.append({"path": img, "kind": "photo"})
+                    else:
+                        logger.warning("Foto de carrusel sin thumbnail utilizable: %s", entry.get("id"))
+                    continue
+                # Video: descargarlo con yt-dlp a partir del entry ya extraído.
+                try:
+                    processed = ydl.process_ie_result(entry, download=True)
+                except yt_dlp.DownloadError:
+                    logger.warning("No se pudo descargar item de video del carrusel: %s", entry.get("id"))
+                    continue
+                path = _entry_filepath(processed)
+                if not path or not os.path.exists(path):
+                    logger.warning("Item de video sin archivo en disco: %s", entry.get("id"))
                     continue
                 ext = path.rsplit(".", 1)[-1].lower()
                 kind = "photo" if ext in _IMAGE_EXTS else "video"
+                # Misma red de seguridad que download_video: un item de video en VP9/AV1
+                # (o H.264 10-bit) se vería congelado en el álbum de Telegram.
+                if kind == "video":
+                    path = _ensure_h264(path)
                 items.append({"path": path, "kind": kind})
         return items
 
@@ -391,13 +484,10 @@ def get_video_info(url: str, max_height: int | None = None) -> dict:
             f"/bestvideo[height<={h}]+bestaudio/best[height<={h}]/best"
         ),
         "format_sort": ["res", "fps", "vcodec:avc", "ext:mp4", "acodec:m4a"],
-        "http_headers": {
-            "User-Agent": (
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                "AppleWebKit/537.36 (KHTML, like Gecko) "
-                "Chrome/124.0.0.0 Safari/537.36"
-            )
-        },
+        # Necesario para posts de foto (single o carrusel): sin esto el preflight
+        # revienta con "No video formats found!" antes de poder clasificarlos.
+        "ignore_no_formats_error": True,
+        "http_headers": {"User-Agent": _UA},
     }
     def _extract() -> dict:
         with yt_dlp.YoutubeDL(_base_opts) as ydl:
@@ -411,15 +501,19 @@ def get_video_info(url: str, max_height: int | None = None) -> dict:
     entries = info.get("entries")
     if entries is not None:
         entries = [e for e in entries if e]
-        total = sum((_estimate_filesize(e) or 0) for e in entries)
-        return {
-            "title": info.get("title") or "Sin título",
-            "duration": None,
-            "filesize": total or None,
-            "is_music": False,
-            "is_playlist": True,
-            "count": len(entries),
-        }
+        if len(entries) != 1:
+            total = sum((_estimate_filesize(e) or 0) for e in entries)
+            return {
+                "title": info.get("title") or "Sin título",
+                "duration": None,
+                "filesize": total or None,
+                "is_music": False,
+                "is_playlist": True,
+                "count": len(entries),
+            }
+        # Un único item envuelto en "playlist": tratarlo como item suelto para poder
+        # clasificarlo (foto vs video) y enrutarlo bien.
+        info = entries[0]
 
     return {
         "title": info.get("title") or "Sin título",
@@ -427,6 +521,7 @@ def get_video_info(url: str, max_height: int | None = None) -> dict:
         "filesize": _estimate_filesize(info),
         "is_music": bool(info.get("track") or info.get("artist")),
         "is_playlist": False,
+        "is_image": _is_image_entry(info),
         "count": 1,
         "song": _identify_song(info),
     }
@@ -620,6 +715,9 @@ def compress_video(filepath: str, target_bytes: int, max_height: int | None = No
         "-maxrate", str(int(video_bps * 1.5)),
         "-bufsize", str(int(video_bps * 2)),
         "-preset", "veryfast",
+        # Fuerza 8-bit 4:2:0: si el origen es 10-bit/4:4:4, sin esto libx264 saca un
+        # perfil (High 10/4:4:4) que Telegram muestra negro/congelado.
+        "-pix_fmt", "yuv420p",
         "-c:a", "aac", "-b:a", "128k",
         "-movflags", "+faststart",
         out,
