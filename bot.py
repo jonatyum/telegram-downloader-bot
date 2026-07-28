@@ -9,10 +9,11 @@ import yt_dlp
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, BotCommand, BotCommandScopeDefault, BotCommandScopeChat, InputMediaPhoto, InputMediaVideo
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, CallbackQueryHandler, ContextTypes, filters
 
-from config import BOT_TOKEN, MAX_TELEGRAM_SIZE_BYTES, MAX_PREFLIGHT_SIZE_BYTES, SUPPORTED_DOMAINS, MAX_CONCURRENT_DOWNLOADS, ADMIN_CHAT_ID, HEALTH_PORT, MAX_VIDEO_HEIGHT, MAX_COMPRESS_HEIGHT, WEBHOOK_URL, WEBHOOK_SECRET, PORT
+from config import BOT_TOKEN, MAX_TELEGRAM_SIZE_BYTES, MAX_PREFLIGHT_SIZE_BYTES, SUPPORTED_DOMAINS, MAX_CONCURRENT_DOWNLOADS, ADMIN_CHAT_ID, HEALTH_PORT, MAX_VIDEO_HEIGHT, MAX_COMPRESS_HEIGHT, WEBHOOK_URL, WEBHOOK_SECRET, PORT, NOTIFY_ON_START
 from database import init_db, upsert_user, get_all_users, get_stats, get_user_max_resolution, set_user_max_resolution, clear_user_max_resolution
 from downloader import download_video, download_audio, download_song, download_post, compress_video, get_video_dimensions, get_video_info, get_audio_info, _IMAGE_EXTS
 from rate_limiter import rate_limiter
+from version import get_local_version, check_remote, uptime_str
 
 logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
@@ -129,6 +130,7 @@ _PUBLIC_COMMANDS = [
 _ADMIN_COMMANDS = _PUBLIC_COMMANDS + [
     BotCommand("users", "👥 Listar usuarios registrados"),
     BotCommand("stats", "📊 Estadísticas de uso"),
+    BotCommand("version", "🏷️ Versión/commit en ejecución"),
 ]
 
 
@@ -150,28 +152,34 @@ async def post_init(application) -> None:
         except Exception:
             logger.warning("No se pudo iniciar el health server en el puerto %d", HEALTH_PORT)
 
-    # Peek de la cola de mensajes pendientes (sin consumirla)
-    try:
-        pending = await application.bot.get_updates(timeout=0, limit=200)
-    except Exception:
-        logger.warning("No se pudo consultar la cola de updates pendientes")
-        pending = []
-
-    # Detectar links duplicados dentro de la cola
-    seen_urls: dict[str, int] = {}  # url → primer update_id
+    # Peek de la cola de mensajes pendientes. Solo sirve en polling: en modo webhook,
+    # getUpdates es incompatible con el webhook activo (siempre vacío/error), así que
+    # se omite por completo.
+    pending = []
     dup_count = 0
-    for upd in pending:
-        if upd.message and upd.message.text:
-            url = upd.message.text.strip()
-            if _is_supported_url(url):
-                if url in seen_urls:
-                    _duplicate_update_ids.add(upd.update_id)
-                    dup_count += 1
-                else:
-                    seen_urls[url] = upd.update_id
+    if not WEBHOOK_URL:
+        try:
+            pending = await application.bot.get_updates(timeout=0, limit=200)
+        except Exception:
+            logger.warning("No se pudo consultar la cola de updates pendientes")
+            pending = []
 
-    # Notificar al admin
-    if ADMIN_CHAT_ID:
+        # Detectar links duplicados dentro de la cola
+        seen_urls: dict[str, int] = {}  # url → primer update_id
+        for upd in pending:
+            if upd.message and upd.message.text:
+                url = upd.message.text.strip()
+                if _is_supported_url(url):
+                    if url in seen_urls:
+                        _duplicate_update_ids.add(upd.update_id)
+                        dup_count += 1
+                    else:
+                        seen_urls[url] = upd.update_id
+
+    # Notificar al admin solo si NOTIFY_ON_START está activado. En Render free el bot
+    # arranca de cero en cada despertar del sleep, así que por defecto no se notifica
+    # para no spamear al admin en cada cold start.
+    if ADMIN_CHAT_ID and NOTIFY_ON_START:
         try:
             if not pending:
                 text = "🤖 Bot iniciado."
@@ -290,6 +298,46 @@ async def cmd_admin_stats(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         f"👥 Usuarios registrados: {stats['total_users']}\n"
         f"📥 Total descargas: {stats['total_requests']}"
     )
+
+
+@admin_only
+async def cmd_admin_version(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    loop = asyncio.get_running_loop()
+    local = get_local_version()
+    # La comparación con GitHub hace I/O de red: fuera del event loop.
+    remote = await loop.run_in_executor(None, check_remote, local["sha"], local["branch"])
+
+    branch = local["branch"] or "?"
+    lines = ["🏷️ Versión en ejecución", ""]
+    lines.append(f"Commit: {local['short'] or '¿?'} ({branch})")
+    if local["commit_msg"]:
+        lines.append(f"Mensaje: {local['commit_msg']}")
+    lines.append(f"Fuente: {local['source']}")
+    if local["dirty"]:
+        lines.append("✏️ Working tree con cambios sin commitear (local)")
+    lines.append(f"Arrancó hace: {uptime_str()}")
+    lines.append("")
+
+    if not remote.get("ok"):
+        lines.append(f"🔍 No pude comparar con GitHub: {remote.get('reason', 'error')}")
+    else:
+        status = remote.get("status")
+        latest_short = (remote.get("latest") or "")[:9]
+        latest_msg = remote.get("latest_msg", "")
+        if status == "identical":
+            lines.append(f"✅ Al día — corres el último commit de {branch}")
+        elif status == "ahead":
+            # base=corriendo, head=último: ahead_by = commits que le faltan al bot
+            lines.append(f"⚠️ Estás {remote.get('ahead_by')} commit(s) por detrás de origin/{branch}")
+            lines.append(f"Último en GitHub: {latest_short} — {latest_msg}")
+        elif status == "behind":
+            lines.append(f"🧪 Corres {remote.get('behind_by')} commit(s) que aún NO están en origin/{branch} (sin pushear)")
+        elif status == "diverged":
+            lines.append(f"🔀 Divergiste de origin/{branch} (hay commits en ambos lados)")
+        else:
+            lines.append(f"🔍 Último en GitHub {branch}: {latest_short} — {latest_msg}")
+
+    await update.message.reply_text("\n".join(lines))
 
 
 _PHASE_MESSAGES = {
@@ -674,6 +722,7 @@ def main() -> None:
     app.add_handler(CommandHandler("settings", cmd_settings))
     app.add_handler(CommandHandler("users", cmd_admin_users))
     app.add_handler(CommandHandler("stats", cmd_admin_stats))
+    app.add_handler(CommandHandler("version", cmd_admin_version))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_link))
     app.add_handler(CallbackQueryHandler(handle_format_choice, pattern="^fmt:"))
     app.add_handler(CallbackQueryHandler(handle_song_download, pattern="^song:"))
