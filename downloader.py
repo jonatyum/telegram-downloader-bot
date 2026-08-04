@@ -13,6 +13,7 @@ from config import (
     DOWNLOAD_DIR,
     MAX_DOCUMENT_SIZE_BYTES,
     MAX_VIDEO_HEIGHT,
+    MAX_COMPRESS_HEIGHT,
     MAX_PREFLIGHT_SIZE_BYTES,
     MAX_DOWNLOAD_ATTEMPTS,
     RETRY_BACKOFF_SECONDS,
@@ -96,6 +97,43 @@ _UA = (
     "AppleWebKit/537.36 (KHTML, like Gecko) "
     "Chrome/124.0.0.0 Safari/537.36"
 )
+
+
+# Cada plataforma nombra el H.264 distinto: TikTok reporta vcodec="h264", Instagram y
+# YouTube "avc1.<perfil>". Un filtro de prefijo ([vcodec^=avc]) solo pilla el segundo, así
+# que las ramas "preferir H.264" se saltaban en TikTok y acababa eligiendo H.265.
+_AVC = r"~='^(avc|h264)'"
+
+
+def _video_format(h: int) -> str:
+    """
+    Cadena de selección de formato, ordenada de "no requiere recodificar" a "lo que haya".
+
+    Bajar H.264 directamente es lo único que evita pasar por _ensure_h264, y esa
+    recodificación es justo lo que revienta en hosts con poca CPU/RAM: un TikTok 1080p en
+    H.265 obliga a un libx264 a 1080p (~700 MB de pico) que en Render free se queda colgado
+    o lo mata el OOM. Por eso el códec pesa más que la resolución: vale más un 540p que se
+    entrega que un 1080p que nunca llega.
+    """
+    return (
+        # 1. DASH en H.264 (YouTube): video + audio por separado.
+        f"bestvideo[vcodec{_AVC}][height<={h}][ext=mp4]+bestaudio[ext=m4a]"
+        f"/bestvideo[vcodec{_AVC}][height<={h}]+bestaudio"
+        # 2. Combinado en H.264 (TikTok, Instagram). Instagram sirve el H.264 solo así:
+        #    sus streams DASH son VP9, que Telegram no reproduce (imagen congelada + audio).
+        #    La última variante va sin filtro de altura para los combinados de IG cuya
+        #    resolución viene sin metadatos.
+        f"/best[vcodec{_AVC}][height<={h}][ext=mp4]/best[vcodec{_AVC}][ext=mp4]"
+        f"/best[vcodec{_AVC}][height<={h}]/best[vcodec{_AVC}]"
+        # 3. Sin H.264 disponible: bajar lo que haya y dejar que _ensure_h264 lo arregle.
+        f"/best[height<={h}][ext=mp4]/best[ext=mp4]"
+        f"/bestvideo[height<={h}]+bestaudio/best[height<={h}]/best"
+    )
+
+
+# vcodec antes que res por el mismo motivo que _video_format: en las ramas de fallback,
+# preferir H.264 aunque sea de menor resolución evita la recodificación.
+_FORMAT_SORT = ["vcodec:avc", "res", "fps", "ext:mp4", "acodec:m4a"]
 
 
 def _is_image_entry(entry: dict) -> bool:
@@ -190,13 +228,26 @@ def _ensure_h264(filepath: str) -> str:
     out = filepath.rsplit(".", 1)[0] + "_h264.mp4"
     logger.info("Recodificando %s (codec=%s pix_fmt=%s) → H.264 yuv420p para compatibilidad con Telegram",
                 filepath, codec, pix_fmt)
-    r = subprocess.run(
-        ["ffmpeg", "-y", "-i", filepath,
-         "-c:v", "libx264", "-preset", "veryfast", "-crf", "23", "-pix_fmt", "yuv420p",
-         "-c:a", "aac", "-b:a", "128k",
-         "-movflags", "+faststart", out],
-        capture_output=True, timeout=300,
-    )
+    cmd = ["ffmpeg", "-y", "-i", filepath]
+    if MAX_COMPRESS_HEIGHT:
+        # La RAM de libx264 escala con la resolución: un encode a 1080p pica en ~700 MB y
+        # en un host de 512 MB lo mata el OOM a mitad, dejando la descarga colgada sin
+        # error. Mismo cap que compress_video. -2 mantiene el ancho par; nunca hace upscale.
+        cmd += ["-vf", f"scale=-2:'min({MAX_COMPRESS_HEIGHT},ih)'"]
+    cmd += [
+        "-c:v", "libx264", "-preset", "veryfast", "-crf", "23", "-pix_fmt", "yuv420p",
+        "-c:a", "aac", "-b:a", "128k",
+        "-movflags", "+faststart", out,
+    ]
+    try:
+        r = subprocess.run(cmd, capture_output=True, timeout=300)
+    except subprocess.TimeoutExpired:
+        # Sin capturar, el timeout subía como excepción cruda y el usuario solo veía
+        # "error inesperado". Mejor entregar el original: puede que Telegram lo reproduzca.
+        logger.error("_ensure_h264: ffmpeg superó el timeout de 300s en %s", filepath)
+        if os.path.exists(out):
+            os.remove(out)
+        return filepath
     if r.returncode != 0 or not os.path.exists(out):
         logger.error("_ensure_h264 falló (rc=%s): %s", r.returncode, r.stderr.decode()[:400])
         if os.path.exists(out):
@@ -301,17 +352,8 @@ def download_video(url: str, on_progress: Callable[[str], None] | None = None, m
 
     ydl_opts = {
         "outtmpl": output_template,
-        "format": (
-            f"bestvideo[vcodec^=avc][height<={h}][ext=mp4]+bestaudio[ext=m4a]"
-            f"/bestvideo[vcodec^=avc][height<={h}]+bestaudio"
-            # Instagram sirve el H.264 solo como formato combinado; sus streams DASH
-            # son VP9, que Telegram no reproduce (imagen congelada + audio). Preferir el
-            # combinado antes de fusionar un DASH VP9. best[ext=mp4] cubre los combinados
-            # de IG cuya resolución viene sin metadatos (por eso sin filtro de altura).
-            f"/best[height<={h}][ext=mp4]/best[ext=mp4]"
-            f"/bestvideo[height<={h}]+bestaudio/best[height<={h}]/best"
-        ),
-        "format_sort": ["res", "fps", "vcodec:avc", "ext:mp4", "acodec:m4a"],
+        "format": _video_format(h),
+        "format_sort": _FORMAT_SORT,
         "merge_output_format": "mp4",
         "postprocessor_args": {
             "merger": [
@@ -369,14 +411,10 @@ def download_post(
 
     ydl_opts = {
         "outtmpl": output_template,
-        # Formato permisivo: los items de video bajan en la mejor calidad ≤h (preferir
-        # H.264 combinado antes que un DASH VP9, igual que en download_video) y los de
-        # imagen caen al único formato disponible (la foto).
-        "format": (
-            f"bestvideo[vcodec^=avc][height<={h}]+bestaudio[ext=m4a]"
-            f"/best[height<={h}][ext=mp4]/best[ext=mp4]"
-            f"/bestvideo[height<={h}]+bestaudio/best[height<={h}]/best"
-        ),
+        # Formato permisivo: los items de video bajan con la misma preferencia por H.264
+        # que download_video, y los de imagen caen al único formato disponible (la foto).
+        "format": _video_format(h),
+        "format_sort": _FORMAT_SORT,
         "merge_output_format": "mp4",
         "quiet": True,
         "no_warnings": True,
@@ -479,11 +517,10 @@ def get_video_info(url: str, max_height: int | None = None) -> dict:
     _base_opts = {
         "quiet": True,
         "no_warnings": True,
-        "format": (
-            f"bestvideo[vcodec^=avc][height<={h}][ext=mp4]+bestaudio[ext=m4a]"
-            f"/bestvideo[height<={h}]+bestaudio/best[height<={h}]/best"
-        ),
-        "format_sort": ["res", "fps", "vcodec:avc", "ext:mp4", "acodec:m4a"],
+        # Mismo selector que la descarga real: si el preflight estimara el tamaño de un
+        # formato distinto al que luego se baja, el chequeo de límite no valdría nada.
+        "format": _video_format(h),
+        "format_sort": _FORMAT_SORT,
         # Necesario para posts de foto (single o carrusel): sin esto el preflight
         # revienta con "No video formats found!" antes de poder clasificarlos.
         "ignore_no_formats_error": True,
