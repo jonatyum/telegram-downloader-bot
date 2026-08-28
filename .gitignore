@@ -14,3 +14,7 @@ results/
 .pytest_cache/
 bot.db
 CLAUDE.md
+
+# Cookies de YouTube: son credenciales de sesión, nunca al repo ni a la imagen.
+cookies.txt
+*cookies*.txt
