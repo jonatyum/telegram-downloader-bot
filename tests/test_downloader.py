@@ -4,7 +4,7 @@ import pytest
 import yt_dlp
 from unittest.mock import MagicMock, patch, call
 
-from downloader import download_video, download_audio, download_post, _make_output_path, get_video_dimensions, get_video_info, get_audio_info, _estimate_filesize, _run_with_retry, _is_transient_error
+from downloader import download_video, download_audio, download_post, _make_output_path, get_video_dimensions, get_video_info, get_audio_info, _estimate_filesize, _run_with_retry, _is_transient_error, fetch_thumbnail
 from config import DOWNLOAD_DIR, MAX_DOWNLOAD_ATTEMPTS, MAX_VIDEO_HEIGHT
 
 
@@ -16,34 +16,113 @@ def _cm(ydl_mock):
 
 
 class TestDownloadPost:
+    """
+    download_post extrae el post con download=False y luego baja cada item por
+    separado: los videos con process_ie_result y las fotos desde su thumbnail
+    (Instagram no las expone como formato descargable).
+    """
+
+    @staticmethod
+    def _video_entry(path):
+        # Un entry con formats/url es video: _is_image_entry lo descarta como foto.
+        return {"id": "vid", "url": "https://cdn/v.mp4",
+                "requested_downloads": [{"filepath": str(path)}]}
+
+    @staticmethod
+    def _photo_entry():
+        # Solo thumbnails, sin formats ni url → _is_image_entry lo clasifica como foto.
+        return {"id": "img", "thumbnails": [{"url": "https://cdn/p.jpg", "width": 1080, "height": 1080}]}
+
+    def _run(self, entries, process_result=None, image_path=None, tmp_path=None):
+        ydl = MagicMock()
+        ydl.extract_info.return_value = {"entries": entries}
+        ydl.process_ie_result.side_effect = (
+            process_result if callable(process_result) else lambda e, download: e
+        )
+
+        with patch("downloader.DOWNLOAD_DIR", str(tmp_path)), \
+             patch("downloader._ensure_h264", side_effect=lambda p: p), \
+             patch("downloader._download_image", return_value=image_path), \
+             patch("yt_dlp.YoutubeDL", return_value=_cm(ydl)):
+            return download_post("https://www.instagram.com/p/abc/"), ydl
+
     def test_returns_items_with_kinds(self, tmp_path):
         vid = tmp_path / "a.1.mp4"; vid.write_bytes(b"v")
         img = tmp_path / "a.2.jpg"; img.write_bytes(b"i")
-        entries = [
-            {"requested_downloads": [{"filepath": str(vid)}]},
-            {"requested_downloads": [{"filepath": str(img)}]},
-        ]
-        ydl = MagicMock()
-        ydl.extract_info.return_value = {"entries": entries}
 
-        with patch("downloader.DOWNLOAD_DIR", str(tmp_path)), \
-             patch("yt_dlp.YoutubeDL", return_value=_cm(ydl)):
-            items = download_post("https://www.instagram.com/p/abc/")
+        items, _ = self._run(
+            entries=[self._video_entry(vid), self._photo_entry()],
+            image_path=str(img),
+            tmp_path=tmp_path,
+        )
 
         assert [it["kind"] for it in items] == ["video", "photo"]
         assert items[0]["path"] == str(vid)
         assert items[1]["path"] == str(img)
 
-    def test_skips_items_missing_on_disk(self, tmp_path):
-        entries = [{"requested_downloads": [{"filepath": str(tmp_path / "missing.mp4")}]}]
-        ydl = MagicMock()
-        ydl.extract_info.return_value = {"entries": entries}
+    def test_photo_downloaded_from_best_thumbnail(self, tmp_path):
+        img = tmp_path / "photo.jpg"; img.write_bytes(b"i")
+        entry = {"id": "img", "thumbnails": [
+            {"url": "https://cdn/small.jpg", "width": 320, "height": 320},
+            {"url": "https://cdn/full.jpg", "width": 1080, "height": 1080},
+        ]}
 
         with patch("downloader.DOWNLOAD_DIR", str(tmp_path)), \
+             patch("downloader._download_image", return_value=str(img)) as mock_dl, \
+             patch("yt_dlp.YoutubeDL", return_value=_cm(self._ydl_with([entry]))):
+            items = download_post("https://www.instagram.com/p/abc/")
+
+        # Elige el thumbnail de mayor resolución = la foto full-size.
+        mock_dl.assert_called_once_with("https://cdn/full.jpg")
+        assert items == [{"path": str(img), "kind": "photo"}]
+
+    def test_skips_photo_whose_download_fails(self, tmp_path):
+        items, _ = self._run(
+            entries=[self._photo_entry()], image_path=None, tmp_path=tmp_path
+        )
+        assert items == []
+
+    def test_skips_items_missing_on_disk(self, tmp_path):
+        items, _ = self._run(
+            entries=[self._video_entry(tmp_path / "missing.mp4")], tmp_path=tmp_path
+        )
+        assert items == []
+
+    def test_skips_video_item_that_fails_to_download(self, tmp_path):
+        ok = tmp_path / "ok.mp4"; ok.write_bytes(b"v")
+
+        def _process(entry, download):
+            if entry["id"] == "boom":
+                raise yt_dlp.DownloadError("item roto")
+            return entry
+
+        # Un item que revienta no debe tumbar el post entero.
+        items, _ = self._run(
+            entries=[{"id": "boom", "url": "https://cdn/x.mp4"}, self._video_entry(ok)],
+            process_result=_process,
+            tmp_path=tmp_path,
+        )
+        assert [it["path"] for it in items] == [str(ok)]
+
+    def test_video_items_pass_through_ensure_h264(self, tmp_path):
+        vid = tmp_path / "a.1.mp4"; vid.write_bytes(b"v")
+        converted = tmp_path / "a.1_h264.mp4"; converted.write_bytes(b"v")
+
+        ydl = self._ydl_with([self._video_entry(vid)])
+        with patch("downloader.DOWNLOAD_DIR", str(tmp_path)), \
+             patch("downloader._ensure_h264", return_value=str(converted)) as mock_h264, \
              patch("yt_dlp.YoutubeDL", return_value=_cm(ydl)):
             items = download_post("https://www.instagram.com/p/abc/")
 
-        assert items == []
+        mock_h264.assert_called_once_with(str(vid))
+        assert items[0]["path"] == str(converted)
+
+    @staticmethod
+    def _ydl_with(entries):
+        ydl = MagicMock()
+        ydl.extract_info.return_value = {"entries": entries}
+        ydl.process_ie_result.side_effect = lambda e, download: e
+        return ydl
 
 
 class TestGetVideoInfoPlaylist:
@@ -68,6 +147,29 @@ class TestGetVideoInfoPlaylist:
 
         assert info["is_playlist"] is False
         assert info["count"] == 1
+
+    def test_playlist_includes_thumbnail_when_available(self):
+        ydl = MagicMock()
+        ydl.extract_info.return_value = {
+            "title": "Post",
+            "entries": [{"filesize": 10}, {"filesize": 20}],
+            "thumbnails": [{"url": "https://cdn/post.jpg", "width": 640, "height": 640}],
+        }
+        with patch("yt_dlp.YoutubeDL", return_value=_cm(ydl)):
+            info = get_video_info("https://www.instagram.com/p/abc/")
+
+        assert info["thumbnail"] == "https://cdn/post.jpg"
+
+    def test_playlist_thumbnail_none_when_missing(self):
+        ydl = MagicMock()
+        ydl.extract_info.return_value = {
+            "title": "Post",
+            "entries": [{"filesize": 10}, {"filesize": 20}],
+        }
+        with patch("yt_dlp.YoutubeDL", return_value=_cm(ydl)):
+            info = get_video_info("https://www.instagram.com/p/abc/")
+
+        assert info["thumbnail"] is None
 
 
 class TestMakeOutputPath:
@@ -312,6 +414,25 @@ class TestGetVideoInfo:
             result = get_video_info("https://youtu.be/abc")
         assert result["title"] == "Sin título"
 
+    def test_includes_thumbnail_when_available(self):
+        cm = self._mock_ydl_cm({
+            "title": "Test video", "duration": 120, "filesize": 5,
+            "thumbnails": [
+                {"url": "https://cdn/small.jpg", "width": 120, "height": 120},
+                {"url": "https://cdn/big.jpg", "width": 1280, "height": 720},
+            ],
+        })
+        with patch("yt_dlp.YoutubeDL", return_value=cm):
+            result = get_video_info("https://youtu.be/abc")
+        # Elige el thumbnail de mayor resolución, igual que download_post.
+        assert result["thumbnail"] == "https://cdn/big.jpg"
+
+    def test_thumbnail_none_when_missing(self):
+        cm = self._mock_ydl_cm({"title": "V", "duration": 10})
+        with patch("yt_dlp.YoutubeDL", return_value=cm):
+            result = get_video_info("https://youtu.be/abc")
+        assert result["thumbnail"] is None
+
     def test_propagates_download_error(self):
         ydl = MagicMock()
         ydl.extract_info.side_effect = yt_dlp.DownloadError("private")
@@ -321,6 +442,32 @@ class TestGetVideoInfo:
         with patch("yt_dlp.YoutubeDL", return_value=cm):
             with pytest.raises(yt_dlp.DownloadError):
                 get_video_info("https://youtu.be/abc")
+
+
+class TestFetchThumbnail:
+    def _mock_response(self, data: bytes):
+        resp = MagicMock()
+        resp.read.return_value = data
+        resp.__enter__ = MagicMock(return_value=resp)
+        resp.__exit__ = MagicMock(return_value=False)
+        return resp
+
+    def test_returns_bytes_on_success(self):
+        with patch("downloader.urllib.request.urlopen", return_value=self._mock_response(b"jpegdata")):
+            result = fetch_thumbnail("https://cdn/thumb.jpg")
+        assert result == b"jpegdata"
+
+    def test_none_on_network_error(self):
+        with patch("downloader.urllib.request.urlopen", side_effect=OSError("boom")):
+            assert fetch_thumbnail("https://cdn/thumb.jpg") is None
+
+    def test_none_when_exceeds_max_bytes(self):
+        with patch("downloader.urllib.request.urlopen", return_value=self._mock_response(b"x" * 100)):
+            assert fetch_thumbnail("https://cdn/thumb.jpg", max_bytes=50) is None
+
+    def test_accepts_exactly_max_bytes(self):
+        with patch("downloader.urllib.request.urlopen", return_value=self._mock_response(b"x" * 50)):
+            assert fetch_thumbnail("https://cdn/thumb.jpg", max_bytes=50) == b"x" * 50
 
 
 class TestGetVideoDimensions:

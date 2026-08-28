@@ -1,0 +1,29 @@
+# Nunca debe llegar al contexto de build: si no hay .dockerignore, `COPY . .` mete
+# estos archivos dentro de la imagen — incluido cualquier secreto real en .env.
+.env
+.git/
+.gitignore
+venv/
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+.idea/
+.DS_Store
+
+# Datos locales, nunca necesarios dentro de la imagen.
+bot.db
+downloads/
+results/
+*.mp4
+*.webm
+*.mkv
+
+# Solo relevantes en desarrollo, no en runtime.
+tests/
+README.md
+CLAUDE.md
+.env.example
+
+# Frontend estático: lo sirve GitHub Pages, ningún Dockerfile lo necesita.
+docs/

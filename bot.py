@@ -1,17 +1,17 @@
 import asyncio
 import logging
-import os
 import uuid
 from functools import wraps
-from urllib.parse import urlparse
 
 import yt_dlp
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, BotCommand, BotCommandScopeDefault, BotCommandScopeChat, InputMediaPhoto, InputMediaVideo
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, CallbackQueryHandler, ContextTypes, filters
 
-from config import BOT_TOKEN, MAX_TELEGRAM_SIZE_BYTES, MAX_PREFLIGHT_SIZE_BYTES, SUPPORTED_DOMAINS, MAX_CONCURRENT_DOWNLOADS, ADMIN_CHAT_ID, HEALTH_PORT, MAX_VIDEO_HEIGHT, MAX_COMPRESS_HEIGHT, WEBHOOK_URL, WEBHOOK_SECRET, PORT, NOTIFY_ON_START
+from config import BOT_TOKEN, MAX_TELEGRAM_SIZE_BYTES, MAX_PREFLIGHT_SIZE_BYTES, MAX_CONCURRENT_DOWNLOADS, ADMIN_CHAT_ID, HEALTH_PORT, MAX_VIDEO_HEIGHT, MAX_COMPRESS_HEIGHT, WEBHOOK_URL, WEBHOOK_SECRET, PORT, NOTIFY_ON_START
 from database import init_db, upsert_user, get_all_users, get_stats, get_user_max_resolution, set_user_max_resolution, clear_user_max_resolution
-from downloader import download_video, download_audio, download_song, download_post, compress_video, get_video_dimensions, get_video_info, get_audio_info, _IMAGE_EXTS
+from downloader import get_video_info, get_audio_info
+from links import extract_urls, is_supported_url, is_youtube_url
+from pipeline import DeliveryLimits, Pipeline, download_error_message
 from rate_limiter import rate_limiter
 from version import get_local_version, check_remote, uptime_str
 
@@ -27,8 +27,17 @@ logger = logging.getLogger(__name__)
 # URL pendiente por usuario hasta que elija formato (video o audio)
 _pending: dict[int, dict] = {}
 
-# Límite de descargas simultáneas
-_download_semaphore = asyncio.Semaphore(MAX_CONCURRENT_DOWNLOADS)
+# Orquesta las descargas contra el motor; el límite de concurrencia vive dentro (ver
+# pipeline.py). Es el único punto de entrada al motor, así que su límite de descargas
+# simultáneas protege al host sin importar cuántos canales lo compartan en el futuro.
+pipeline = Pipeline(MAX_CONCURRENT_DOWNLOADS, MAX_VIDEO_HEIGHT)
+
+# Los topes de Telegram traducidos al lenguaje del pipeline: por encima de
+# max_inline_bytes se intenta comprimir antes de caer a documento.
+DELIVERY_LIMITS = DeliveryLimits(
+    max_inline_bytes=MAX_TELEGRAM_SIZE_BYTES,
+    max_compress_height=MAX_COMPRESS_HEIGHT,
+)
 
 # Update IDs de mensajes duplicados detectados en la cola al arrancar
 _duplicate_update_ids: set[int] = set()
@@ -36,11 +45,6 @@ _duplicate_update_ids: set[int] = set()
 # token → query de búsqueda para el botón "Descargar canción" (callback_data ≤ 64 bytes).
 _song_queries: dict[str, str] = {}
 _SONG_STORE_MAX = 500
-
-# Telegram permite hasta 10 elementos por álbum (media group).
-_MEDIA_GROUP_MAX = 10
-
-_YOUTUBE_DOMAINS = {"youtu.be", "youtube.com", "music.youtube.com"}
 
 
 def _store_song(query: str) -> str:
@@ -65,34 +69,64 @@ def _song_keyboard(song: dict | None) -> InlineKeyboardMarkup | None:
     ]])
 
 
-def _extract_urls(text: str) -> list[str]:
-    """Devuelve todas las URLs soportadas del mensaje, sin duplicados y en orden."""
-    urls: list[str] = []
-    seen: set[str] = set()
-    for token in text.split():
-        if token not in seen and _is_supported_url(token):
-            seen.add(token)
-            urls.append(token)
-    return urls
+# Telegram permite hasta 10 elementos por álbum (media group).
+_MEDIA_GROUP_MAX = 10
 
 
-def _is_supported_url(text: str) -> bool:
-    try:
-        parsed = urlparse(text)
-        if parsed.scheme not in ("http", "https"):
-            return False
-        host = parsed.netloc.lower().removeprefix("www.")
-        return any(host == d or host.endswith("." + d) for d in SUPPORTED_DOMAINS)
-    except Exception:
-        return False
+class TelegramMessenger:
+    """
+    Adaptador de pipeline.Messenger para python-telegram-bot: el status_msg ya existe
+    (se crea durante el routing, antes de invocar el pipeline) y esta clase solo lo
+    envuelve. Es el único lugar donde el pipeline toca la API de Telegram.
+    """
 
+    def __init__(self, status_msg, limits: DeliveryLimits):
+        self._msg = status_msg
+        self.limits = limits
 
-def _is_youtube_url(text: str) -> bool:
-    try:
-        host = urlparse(text).netloc.lower().removeprefix("www.")
-        return any(host == d or host.endswith("." + d) for d in _YOUTUBE_DOMAINS)
-    except Exception:
-        return False
+    async def update(self, text: str) -> None:
+        await self._msg.edit_text(text)
+
+    async def finish(self) -> None:
+        await self._msg.delete()
+
+    async def send_video(self, path, *, width, height, caption, song):
+        with open(path, "rb") as f:
+            await self._msg.reply_video(
+                video=f, width=width, height=height, supports_streaming=True,
+                caption=caption, reply_markup=_song_keyboard(song),
+            )
+
+    async def send_audio(self, path, *, title, performer, filename):
+        with open(path, "rb") as f:
+            await self._msg.reply_audio(audio=f, title=title, performer=performer, filename=filename)
+
+    async def send_photo(self, path):
+        with open(path, "rb") as f:
+            await self._msg.reply_photo(photo=f)
+
+    async def send_document(self, path, *, caption, song):
+        with open(path, "rb") as f:
+            await self._msg.reply_document(document=f, caption=caption, reply_markup=_song_keyboard(song))
+
+    async def send_album(self, items: list[dict]) -> None:
+        """Envía los items de un carrusel en álbumes de hasta 10 elementos."""
+        for i in range(0, len(items), _MEDIA_GROUP_MAX):
+            chunk = items[i:i + _MEDIA_GROUP_MAX]
+            open_files = []
+            try:
+                media = []
+                for it in chunk:
+                    f = open(it["path"], "rb")
+                    open_files.append(f)
+                    if it["kind"] == "photo":
+                        media.append(InputMediaPhoto(f))
+                    else:
+                        media.append(InputMediaVideo(f, supports_streaming=True))
+                await self._msg.reply_media_group(media=media)
+            finally:
+                for f in open_files:
+                    f.close()
 
 
 async def _health_handler(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
@@ -169,7 +203,7 @@ async def post_init(application) -> None:
         for upd in pending:
             if upd.message and upd.message.text:
                 url = upd.message.text.strip()
-                if _is_supported_url(url):
+                if is_supported_url(url):
                     if url in seen_urls:
                         _duplicate_update_ids.add(upd.update_id)
                         dup_count += 1
@@ -340,31 +374,6 @@ async def cmd_admin_version(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     await update.message.reply_text("\n".join(lines))
 
 
-_PHASE_MESSAGES = {
-    "downloading": "⬇️ Descargando...",
-    "finished":    "🔄 Procesando...",
-}
-
-
-def _make_progress_callback(loop: asyncio.AbstractEventLoop, status_msg):
-    last_phase = [None]
-
-    async def _edit(text: str) -> None:
-        try:
-            await status_msg.edit_text(text)
-        except Exception:
-            pass
-
-    def callback(status: str) -> None:
-        text = _PHASE_MESSAGES.get(status)
-        if text is None or status == last_phase[0]:
-            return
-        last_phase[0] = status
-        asyncio.run_coroutine_threadsafe(_edit(text), loop)
-
-    return callback
-
-
 async def handle_link(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if update.update_id in _duplicate_update_ids:
         _duplicate_update_ids.discard(update.update_id)
@@ -375,7 +384,7 @@ async def handle_link(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         return
 
     user = update.effective_user
-    urls = _extract_urls(update.message.text)
+    urls = extract_urls(update.message.text)
 
     if not urls:
         await update.message.reply_text(
@@ -424,11 +433,12 @@ async def _process_url(update: Update, url: str, user_pref: int | None, allow_fo
         # envía como álbum/foto. Ambos pasan por la misma ruta (download_post baja las
         # fotos vía thumbnail y los videos con su formato).
         if (info.get("is_playlist") and info.get("count", 1) > 1) or info.get("is_image"):
-            await _do_carousel(url, status_msg, loop, user_pref)
+            messenger = TelegramMessenger(status_msg, DELIVERY_LIMITS)
+            await pipeline.carousel(url, messenger=messenger, user_pref_height=user_pref)
             return
 
         filesize = info.get("filesize")
-        is_youtube = _is_youtube_url(url)
+        is_youtube = is_youtube_url(url)
 
         if filesize and filesize > MAX_PREFLIGHT_SIZE_BYTES:
             size_mb = filesize / (1024 * 1024)
@@ -460,11 +470,12 @@ async def _process_url(update: Update, url: str, user_pref: int | None, allow_fo
             await status_msg.edit_text(text, reply_markup=keyboard)
             return
 
-        await _do_download(url, status_msg, loop, fmt="video", user_pref=user_pref, song=info.get("song"))
+        messenger = TelegramMessenger(status_msg, DELIVERY_LIMITS)
+        await pipeline.download(url, fmt="video", messenger=messenger, user_pref_height=user_pref, song=info.get("song"))
 
     except yt_dlp.DownloadError as e:
         logger.warning("DownloadError para %s: %s", url, e)
-        await status_msg.edit_text(_download_error_msg(str(e)))
+        await status_msg.edit_text(download_error_message(str(e)))
     except Exception:
         logger.exception("Error inesperado para %s", url)
         await status_msg.edit_text("💥 Ocurrió un error inesperado. Inténtalo de nuevo.")
@@ -489,16 +500,16 @@ async def handle_format_choice(update: Update, context: ContextTypes.DEFAULT_TYP
 
     await query.edit_message_reply_markup(reply_markup=None)
 
-    loop = asyncio.get_running_loop()
     try:
         if fmt == "audio":
             await status_msg.edit_text("🔍 Verificando...")
-            if await _audio_over_limit(url, status_msg, loop):
+            if await _audio_over_limit(url, status_msg, asyncio.get_running_loop()):
                 return
-        await _do_download(url, status_msg, loop, fmt=fmt, user_pref=user_pref, song=song)
+        messenger = TelegramMessenger(status_msg, DELIVERY_LIMITS)
+        await pipeline.download(url, fmt=fmt, messenger=messenger, user_pref_height=user_pref, song=song)
     except yt_dlp.DownloadError as e:
         logger.warning("DownloadError para %s: %s", url, e)
-        await status_msg.edit_text(_download_error_msg(str(e)))
+        await status_msg.edit_text(download_error_message(str(e)))
     except Exception:
         logger.exception("Error inesperado para %s", url)
         await status_msg.edit_text("💥 Ocurrió un error inesperado. Inténtalo de nuevo.")
@@ -534,10 +545,10 @@ async def handle_song_download(update: Update, context: ContextTypes.DEFAULT_TYP
     except Exception:
         pass
 
-    loop = asyncio.get_running_loop()
     status_msg = await query.message.reply_text(f"🔎 Buscando: {search}...")
     try:
-        await _do_song_download(search, status_msg, loop)
+        messenger = TelegramMessenger(status_msg, DELIVERY_LIMITS)
+        await pipeline.song(search, messenger=messenger)
     except yt_dlp.DownloadError as e:
         logger.warning("DownloadError (canción) para %s: %s", search, e)
         await status_msg.edit_text("⚠️ No encontré esa canción. Intenta con otra.")
@@ -546,174 +557,9 @@ async def handle_song_download(update: Update, context: ContextTypes.DEFAULT_TYP
         await status_msg.edit_text("💥 Ocurrió un error inesperado. Inténtalo de nuevo.")
 
 
-async def _do_song_download(query: str, status_msg, loop) -> None:
-    filepath = None
-    async with _download_semaphore:
-        await status_msg.edit_text("⬇️ Descargando canción...")
-        progress_cb = _make_progress_callback(loop, status_msg)
-        try:
-            filepath, meta = await loop.run_in_executor(None, download_song, query, progress_cb)
-            title = meta["title"]
-            artist = meta.get("artist")
-            audio_filename = f"{artist} - {title}.mp3" if artist else f"{title}.mp3"
-            await status_msg.edit_text("📤 Enviando audio...")
-            with open(filepath, "rb") as f:
-                await status_msg.reply_audio(
-                    audio=f,
-                    title=title,
-                    performer=artist,
-                    filename=audio_filename,
-                )
-            await status_msg.delete()
-        finally:
-            if filepath and os.path.exists(filepath):
-                os.remove(filepath)
-
-
-async def _do_download(url: str, status_msg, loop, fmt: str, user_pref: int | None = None, song: dict | None = None) -> None:
-    await status_msg.edit_text("⏳ En cola...")
-    filepath = None
-    extra_path = None  # archivo comprimido temporal, si se genera
-    effective_height = user_pref or MAX_VIDEO_HEIGHT
-
-    async with _download_semaphore:
-        await status_msg.edit_text("⬇️ Descargando...")
-        progress_cb = _make_progress_callback(loop, status_msg)
-
-        try:
-            if fmt == "audio":
-                filepath, meta = await loop.run_in_executor(None, download_audio, url, progress_cb)
-                title = meta["title"]
-                artist = meta.get("artist")
-                audio_filename = f"{artist} - {title}.mp3" if artist else f"{title}.mp3"
-                await status_msg.edit_text("📤 Enviando audio...")
-                with open(filepath, "rb") as f:
-                    await status_msg.reply_audio(
-                        audio=f,
-                        title=title,
-                        performer=artist,
-                        filename=audio_filename,
-                    )
-            else:
-                filepath = await loop.run_in_executor(None, download_video, url, progress_cb, effective_height)
-
-                # Post de una sola foto (link de imagen, no video): enviar como foto.
-                if filepath.rsplit(".", 1)[-1].lower() in _IMAGE_EXTS:
-                    await status_msg.edit_text("📤 Enviando foto...")
-                    with open(filepath, "rb") as f:
-                        await status_msg.reply_photo(photo=f)
-                    await status_msg.delete()
-                    return
-
-                file_size = os.path.getsize(filepath)
-                width, height = get_video_dimensions(filepath)
-
-                quality_note = None
-                if user_pref and height:
-                    if height < user_pref:
-                        quality_note = f"📐 Solo disponible en {height}p (tu preferencia: {user_pref}p)"
-                    elif height > user_pref:
-                        quality_note = f"📐 Descargado en {height}p — no había formatos disponibles en {user_pref}p o menos"
-
-                song_kb = _song_keyboard(song)
-                send_path = filepath
-                as_document = False
-
-                if file_size > MAX_TELEGRAM_SIZE_BYTES:
-                    # Intenta comprimir para poder enviarlo como video reproducible.
-                    await status_msg.edit_text("🗜️ El video es grande, comprimiendo...")
-                    compressed = await loop.run_in_executor(
-                        None, compress_video, filepath, MAX_TELEGRAM_SIZE_BYTES, MAX_COMPRESS_HEIGHT
-                    )
-                    if compressed:
-                        extra_path = compressed
-                        send_path = compressed
-                        width, height = get_video_dimensions(send_path)
-                    else:
-                        as_document = True  # la compresión no bastó: cae a documento
-
-                if as_document:
-                    await status_msg.edit_text("📦 No se pudo comprimir, enviando como documento...")
-                    with open(filepath, "rb") as f:
-                        await status_msg.reply_document(document=f, caption=quality_note, reply_markup=song_kb)
-                else:
-                    await status_msg.edit_text("📤 Enviando video...")
-                    with open(send_path, "rb") as f:
-                        await status_msg.reply_video(
-                            video=f,
-                            width=width or None,
-                            height=height or None,
-                            supports_streaming=True,
-                            caption=quality_note,
-                            reply_markup=song_kb,
-                        )
-
-            await status_msg.delete()
-
-        finally:
-            for path in (filepath, extra_path):
-                if path and os.path.exists(path):
-                    os.remove(path)
-
-
-async def _do_carousel(url: str, status_msg, loop, user_pref: int | None = None) -> None:
-    await status_msg.edit_text("⏳ En cola...")
-    items: list[dict] = []
-    effective_height = user_pref or MAX_VIDEO_HEIGHT
-
-    async with _download_semaphore:
-        await status_msg.edit_text("⬇️ Descargando...")
-        progress_cb = _make_progress_callback(loop, status_msg)
-
-        try:
-            items = await loop.run_in_executor(None, download_post, url, progress_cb, effective_height)
-            if not items:
-                await status_msg.edit_text("⚠️ No pude descargar el contenido de ese post.")
-                return
-
-            await status_msg.edit_text(f"📤 Enviando {len(items)} elementos...")
-            await _send_media_groups(status_msg, items)
-            await status_msg.delete()
-
-        finally:
-            for it in items:
-                path = it.get("path")
-                if path and os.path.exists(path):
-                    os.remove(path)
-
-
-async def _send_media_groups(status_msg, items: list[dict]) -> None:
-    """Envía los items de un carrusel en álbumes de hasta 10 elementos."""
-    for i in range(0, len(items), _MEDIA_GROUP_MAX):
-        chunk = items[i:i + _MEDIA_GROUP_MAX]
-        open_files = []
-        try:
-            media = []
-            for it in chunk:
-                f = open(it["path"], "rb")
-                open_files.append(f)
-                if it["kind"] == "photo":
-                    media.append(InputMediaPhoto(f))
-                else:
-                    media.append(InputMediaVideo(f, supports_streaming=True))
-            await status_msg.reply_media_group(media=media)
-        finally:
-            for f in open_files:
-                f.close()
-
-
-def _download_error_msg(reason: str) -> str:
-    reason = reason.lower()
-    if "private" in reason or "login" in reason:
-        return "🔒 No puedo descargar ese video, parece que es privado o requiere login."
-    if "not found" in reason or "404" in reason:
-        return "🔍 No encontré el video. Verifica que el link sea correcto."
-    if "unable to extract" in reason or "rehydration" in reason:
-        return "🛠️ No pude leer ese video ahora mismo (la plataforma cambió algo). Intenta de nuevo en un rato."
-    return "⚠️ No pude descargar el video. Puede que sea privado o que el link haya expirado."
-
-
 def main() -> None:
+    if not BOT_TOKEN:
+        raise RuntimeError("BOT_TOKEN no está configurada")
     init_db()
 
     app = ApplicationBuilder().token(BOT_TOKEN).post_init(post_init).build()

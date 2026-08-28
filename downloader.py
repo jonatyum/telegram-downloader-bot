@@ -99,6 +99,42 @@ _UA = (
 )
 
 
+def _base_opts() -> dict:
+    """Opciones comunes a toda llamada a yt-dlp: sin logging propio y el mismo User-Agent en todas partes."""
+    return {
+        "quiet": True,
+        "no_warnings": True,
+        "http_headers": {"User-Agent": _UA},
+    }
+
+
+def _download_opts(
+    output_template: str,
+    on_progress: Callable[[str], None] | None,
+    **extra,
+) -> dict:
+    """
+    Opciones compartidas por las cuatro funciones que descargan de verdad (a diferencia
+    de un preflight con download=False): plantilla de salida, tope de tamaño, reintentos
+    de red y el hook de progreso. `extra` añade o sobreescribe lo específico de cada una
+    (format, postprocessors, extractor_args...).
+    """
+    def _progress_hook(d: dict) -> None:
+        if on_progress:
+            on_progress(d.get("status", ""))
+
+    opts = _base_opts()
+    opts.update({
+        "outtmpl": output_template,
+        "max_filesize": MAX_DOCUMENT_SIZE_BYTES,
+        "retries": 3,
+        "fragment_retries": 3,
+        "progress_hooks": [_progress_hook],
+    })
+    opts.update(extra)
+    return opts
+
+
 # Cada plataforma nombra el H.264 distinto: TikTok reporta vcodec="h264", Instagram y
 # YouTube "avc1.<perfil>". Un filtro de prefijo ([vcodec^=avc]) solo pilla el segundo, así
 # que las ramas "preferir H.264" se saltaban en TikTok y acababa eligiendo H.265.
@@ -174,6 +210,26 @@ def _download_image(url: str) -> str | None:
         logger.exception("No se pudo descargar la imagen del post")
         if os.path.exists(out):
             os.remove(out)
+        return None
+
+
+def fetch_thumbnail(url: str, max_bytes: int = 5 * 1024 * 1024) -> bytes | None:
+    """
+    Descarga los bytes de un thumbnail para previsualización (no los guarda en disco,
+    a diferencia de _download_image: el canal web los embebe directo en la respuesta).
+    None si falla o si supera max_bytes (tope de seguridad, no debería tocarse nunca
+    con thumbnails reales).
+    """
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": _UA})
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            data = resp.read(max_bytes + 1)
+        if len(data) > max_bytes:
+            logger.warning("Thumbnail de previsualización excede %d bytes, se descarta", max_bytes)
+            return None
+        return data
+    except Exception:
+        logger.warning("No se pudo descargar el thumbnail de previsualización")
         return None
 
 
@@ -346,16 +402,12 @@ def download_video(url: str, on_progress: Callable[[str], None] | None = None, m
     output_template = _make_output_path()
     h = max_height or MAX_VIDEO_HEIGHT
 
-    def _progress_hook(d: dict) -> None:
-        if on_progress:
-            on_progress(d.get("status", ""))
-
-    ydl_opts = {
-        "outtmpl": output_template,
-        "format": _video_format(h),
-        "format_sort": _FORMAT_SORT,
-        "merge_output_format": "mp4",
-        "postprocessor_args": {
+    ydl_opts = _download_opts(
+        output_template, on_progress,
+        format=_video_format(h),
+        format_sort=_FORMAT_SORT,
+        merge_output_format="mp4",
+        postprocessor_args={
             "merger": [
                 "-c:v", "copy",
                 "-c:a", "copy",
@@ -363,21 +415,8 @@ def download_video(url: str, on_progress: Callable[[str], None] | None = None, m
                 "-avoid_negative_ts", "make_zero",
             ],
         },
-        "extractor_args": {"tiktok": {"webpage_download": True}},
-        "quiet": True,
-        "no_warnings": True,
-        "max_filesize": MAX_DOCUMENT_SIZE_BYTES,
-        "retries": 3,
-        "fragment_retries": 3,
-        "progress_hooks": [_progress_hook],
-        "http_headers": {
-            "User-Agent": (
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                "AppleWebKit/537.36 (KHTML, like Gecko) "
-                "Chrome/124.0.0.0 Safari/537.36"
-            )
-        },
-    }
+        extractor_args={"tiktok": {"webpage_download": True}},
+    )
 
     def _do_download() -> str:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -405,28 +444,17 @@ def download_post(
     output_template = _make_carousel_template()
     h = max_height or MAX_VIDEO_HEIGHT
 
-    def _progress_hook(d: dict) -> None:
-        if on_progress:
-            on_progress(d.get("status", ""))
-
-    ydl_opts = {
-        "outtmpl": output_template,
+    ydl_opts = _download_opts(
+        output_template, on_progress,
         # Formato permisivo: los items de video bajan con la misma preferencia por H.264
         # que download_video, y los de imagen caen al único formato disponible (la foto).
-        "format": _video_format(h),
-        "format_sort": _FORMAT_SORT,
-        "merge_output_format": "mp4",
-        "quiet": True,
-        "no_warnings": True,
+        format=_video_format(h),
+        format_sort=_FORMAT_SORT,
+        merge_output_format="mp4",
         # Los items de foto no tienen formato de video: sin esto yt-dlp lanza
         # "No video formats found!" y aborta el post entero. Las fotos se bajan aparte.
-        "ignore_no_formats_error": True,
-        "max_filesize": MAX_DOCUMENT_SIZE_BYTES,
-        "retries": 3,
-        "fragment_retries": 3,
-        "progress_hooks": [_progress_hook],
-        "http_headers": {"User-Agent": _UA},
-    }
+        ignore_no_formats_error=True,
+    )
 
     def _do_download() -> list[dict]:
         items: list[dict] = []
@@ -514,9 +542,8 @@ def get_video_info(url: str, max_height: int | None = None) -> dict:
     Lanza yt_dlp.DownloadError si el video no existe o es privado.
     """
     h = max_height or MAX_VIDEO_HEIGHT
-    _base_opts = {
-        "quiet": True,
-        "no_warnings": True,
+    opts = _base_opts()
+    opts.update({
         # Mismo selector que la descarga real: si el preflight estimara el tamaño de un
         # formato distinto al que luego se baja, el chequeo de límite no valdría nada.
         "format": _video_format(h),
@@ -524,10 +551,10 @@ def get_video_info(url: str, max_height: int | None = None) -> dict:
         # Necesario para posts de foto (single o carrusel): sin esto el preflight
         # revienta con "No video formats found!" antes de poder clasificarlos.
         "ignore_no_formats_error": True,
-        "http_headers": {"User-Agent": _UA},
-    }
+    })
+
     def _extract() -> dict:
-        with yt_dlp.YoutubeDL(_base_opts) as ydl:
+        with yt_dlp.YoutubeDL(opts) as ydl:
             return ydl.extract_info(url, download=False)
 
     # El preflight es donde fallan los errores intermitentes de extracción (ej. la
@@ -547,6 +574,9 @@ def get_video_info(url: str, max_height: int | None = None) -> dict:
                 "is_music": False,
                 "is_playlist": True,
                 "count": len(entries),
+                # El post en sí (no cada entry) suele traer su propio thumbnail; si no
+                # lo trae, el canal web simplemente no muestra previsualización.
+                "thumbnail": _best_thumbnail_url(info),
             }
         # Un único item envuelto en "playlist": tratarlo como item suelto para poder
         # clasificarlo (foto vs video) y enrutarlo bien.
@@ -561,6 +591,7 @@ def get_video_info(url: str, max_height: int | None = None) -> dict:
         "is_image": _is_image_entry(info),
         "count": 1,
         "song": _identify_song(info),
+        "thumbnail": _best_thumbnail_url(info),
     }
 
 
@@ -572,33 +603,16 @@ def download_audio(url: str, on_progress: Callable[[str], None] | None = None) -
     """
     output_template = _make_output_path()
 
-    def _progress_hook(d: dict) -> None:
-        if on_progress:
-            on_progress(d.get("status", ""))
-
-    ydl_opts = {
-        "outtmpl": output_template,
-        "format": "bestaudio/best",
-        "postprocessors": [{
+    ydl_opts = _download_opts(
+        output_template, on_progress,
+        format="bestaudio/best",
+        postprocessors=[{
             "key": "FFmpegExtractAudio",
             "preferredcodec": "mp3",
             "preferredquality": "320",
         }],
-        "extractor_args": {"youtube": {"skip": ["dash", "hls"]}},
-        "quiet": True,
-        "no_warnings": True,
-        "max_filesize": MAX_DOCUMENT_SIZE_BYTES,
-        "retries": 3,
-        "fragment_retries": 3,
-        "progress_hooks": [_progress_hook],
-        "http_headers": {
-            "User-Agent": (
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                "AppleWebKit/537.36 (KHTML, like Gecko) "
-                "Chrome/124.0.0.0 Safari/537.36"
-            )
-        },
-    }
+        extractor_args={"youtube": {"skip": ["dash", "hls"]}},
+    )
 
     def _do_download() -> tuple[str, dict]:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -621,33 +635,16 @@ def download_song(query: str, on_progress: Callable[[str], None] | None = None) 
     """
     output_template = _make_output_path()
 
-    def _progress_hook(d: dict) -> None:
-        if on_progress:
-            on_progress(d.get("status", ""))
-
-    ydl_opts = {
-        "outtmpl": output_template,
-        "format": "bestaudio/best",
-        "noplaylist": True,
-        "postprocessors": [{
+    ydl_opts = _download_opts(
+        output_template, on_progress,
+        format="bestaudio/best",
+        noplaylist=True,
+        postprocessors=[{
             "key": "FFmpegExtractAudio",
             "preferredcodec": "mp3",
             "preferredquality": "320",
         }],
-        "quiet": True,
-        "no_warnings": True,
-        "max_filesize": MAX_DOCUMENT_SIZE_BYTES,
-        "retries": 3,
-        "fragment_retries": 3,
-        "progress_hooks": [_progress_hook],
-        "http_headers": {
-            "User-Agent": (
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                "AppleWebKit/537.36 (KHTML, like Gecko) "
-                "Chrome/124.0.0.0 Safari/537.36"
-            )
-        },
-    }
+    )
 
     def _do_download() -> tuple[str, dict]:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -667,18 +664,9 @@ def download_song(query: str, on_progress: Callable[[str], None] | None = None) 
 
 def get_audio_info(url: str) -> dict:
     """Obtiene metadatos del audio sin descargarlo. Retorna filesize (bytes, puede ser None)."""
-    opts = {
-        "quiet": True,
-        "no_warnings": True,
-        "format": "bestaudio/best",
-        "http_headers": {
-            "User-Agent": (
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                "AppleWebKit/537.36 (KHTML, like Gecko) "
-                "Chrome/124.0.0.0 Safari/537.36"
-            )
-        },
-    }
+    opts = _base_opts()
+    opts["format"] = "bestaudio/best"
+
     def _extract() -> dict:
         with yt_dlp.YoutubeDL(opts) as ydl:
             return ydl.extract_info(url, download=False)

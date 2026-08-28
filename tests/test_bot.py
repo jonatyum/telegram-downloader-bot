@@ -1,10 +1,21 @@
-import asyncio
+"""
+Tests de bot.py: routing y presentación (qué camino toma un link, qué teclado se
+muestra, qué mensaje de error se ve). La ejecución de la descarga en sí — comprimir,
+elegir documento vs. video, limpiar temporales, el semáforo de concurrencia — vive en
+pipeline.py y se prueba en test_pipeline.py.
+
+La descarga real se simula parcheando las funciones del motor por su nombre en el
+módulo que las usa (`bot.get_video_info`, `pipeline.download_video`, ...), dejando que
+asyncio corra de verdad. Es más robusto que interceptar `asyncio.get_running_loop`: si
+alguien mueve dónde se llama una función, el test sigue siendo válido en vez de quedar
+apuntando a un mock que ya no intercepta nada.
+"""
 import os
 import pytest
 import yt_dlp
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from bot import _is_supported_url, _is_youtube_url, _extract_urls, cmd_start, cmd_help, handle_link, handle_format_choice, handle_song_download, _make_progress_callback, post_init, cmd_admin_users, cmd_admin_stats
+from bot import cmd_start, cmd_help, handle_link, handle_format_choice, handle_song_download, post_init, cmd_admin_users, cmd_admin_stats
 
 
 @pytest.fixture(autouse=True)
@@ -15,44 +26,6 @@ def mock_db_and_rate_limiter():
         mock_rl.is_allowed.return_value = True
         mock_rl.seconds_until_reset.return_value = 30
         yield mock_rl
-
-
-# ---------------------------------------------------------------------------
-# _is_supported_url
-# ---------------------------------------------------------------------------
-
-class TestIsSupportedUrl:
-    @pytest.mark.parametrize("url", [
-        "https://www.tiktok.com/@user/video/123",
-        "https://vm.tiktok.com/abc123/",
-        "https://www.instagram.com/reel/abc123/",
-        "https://instagr.am/p/abc/",
-        "https://www.facebook.com/watch?v=123",
-        "https://fb.watch/abc123/",
-        "https://youtu.be/dQw4w9WgXcQ",
-        "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
-        "https://youtube.com/shorts/abc123",
-        "https://twitter.com/user/status/123456/video/1",
-        "https://x.com/user/status/123456",
-        "https://t.co/abc123",
-    ])
-    def test_supported_urls(self, url):
-        assert _is_supported_url(url) is True
-
-    @pytest.mark.parametrize("url", [
-        "https://reddit.com/r/videos/",
-        "https://example.com/video.mp4",
-        "not a url at all",
-        "",
-        "ftp://tiktok.com/video",
-    ])
-    def test_unsupported_urls(self, url):
-        assert _is_supported_url(url) is False
-
-    def test_no_subdomain_spoofing(self):
-        # "notiktok.com" should not match "tiktok.com"
-        assert _is_supported_url("https://notiktok.com/video") is False
-        assert _is_supported_url("https://faketiktok.com/video") is False
 
 
 # ---------------------------------------------------------------------------
@@ -76,40 +49,8 @@ def _make_context() -> MagicMock:
 _DEFAULT_INFO = {"title": "Test", "filesize": None, "duration": 10}
 
 
-def _mock_executor(download_result=None, download_error=None, info=None):
-    """Simula las dos llamadas a run_in_executor en handle_link:
-    1ª llamada (preflight get_video_info) → info dict
-    2ª llamada (download_video/audio)     → download_result o lanza download_error
-    """
-    preflight = info or _DEFAULT_INFO
-
-    async def _side_effect(executor, func, *args):
-        if not hasattr(_side_effect, "_called"):
-            _side_effect._called = True
-            return preflight
-        if download_error:
-            raise download_error
-        return download_result
-
-    return AsyncMock(side_effect=_side_effect)
-
-
-def _mock_audio_executor(audio_info=None, download_result=None, download_error=None):
-    """Simula las dos llamadas a run_in_executor en handle_format_choice con fmt=audio:
-    1ª llamada (get_audio_info) → audio_info dict
-    2ª llamada (download_audio) → download_result o lanza download_error
-    """
-    _audio_info = audio_info or {"filesize": None}
-
-    async def _side_effect(executor, func, *args):
-        if not hasattr(_side_effect, "_called"):
-            _side_effect._called = True
-            return _audio_info
-        if download_error:
-            raise download_error
-        return download_result
-
-    return AsyncMock(side_effect=_side_effect)
+def _info(**overrides) -> dict:
+    return {**_DEFAULT_INFO, **overrides}
 
 
 # ---------------------------------------------------------------------------
@@ -173,9 +114,8 @@ class TestPreflight:
         update.message.reply_text = AsyncMock(return_value=status_msg)
         context = _make_context()
 
-        large_info = {"title": "Big video", "duration": 600, "filesize": 150 * 1024 * 1024 + 1}
-        with patch("bot.asyncio.get_running_loop") as mock_loop:
-            mock_loop.return_value.run_in_executor = _mock_executor(info=large_info)
+        large_info = _info(title="Big video", duration=600, filesize=150 * 1024 * 1024 + 1)
+        with patch("bot.get_video_info", return_value=large_info):
             await handle_link(update, context)
 
         status_msg.edit_text.assert_called_once()
@@ -188,9 +128,8 @@ class TestPreflight:
         update.message.reply_text = AsyncMock(return_value=status_msg)
         context = _make_context()
 
-        large_info = {"title": "Big video", "duration": 600, "filesize": 150 * 1024 * 1024 + 1}
-        with patch("bot.asyncio.get_running_loop") as mock_loop:
-            mock_loop.return_value.run_in_executor = _mock_executor(info=large_info)
+        large_info = _info(title="Big video", duration=600, filesize=150 * 1024 * 1024 + 1)
+        with patch("bot.get_video_info", return_value=large_info):
             await handle_link(update, context)
 
         status_msg.edit_text.assert_called_once()
@@ -209,11 +148,9 @@ class TestPreflight:
         update.message.reply_text = AsyncMock(return_value=status_msg)
         context = _make_context()
 
-        with patch("bot.asyncio.get_running_loop") as mock_loop:
-            mock_loop.return_value.run_in_executor = _mock_executor(
-                info={"title": "Video", "duration": 60, "filesize": None},
-                download_result=str(fake_video),
-            )
+        with patch("bot.get_video_info", return_value=_info(filesize=None)), \
+             patch("pipeline.download_video", return_value=str(fake_video)), \
+             patch("pipeline.get_video_dimensions", return_value=(0, 0)):
             await handle_link(update, context)
 
         status_msg.reply_video.assert_called_once()
@@ -227,11 +164,9 @@ class TestPreflight:
         update.message.reply_text = AsyncMock(return_value=status_msg)
         context = _make_context()
 
-        with patch("bot.asyncio.get_running_loop") as mock_loop:
-            mock_loop.return_value.run_in_executor = _mock_executor(
-                info={"title": "Video", "duration": 60, "filesize": 10 * 1024 * 1024},
-                download_result=str(fake_video),
-            )
+        with patch("bot.get_video_info", return_value=_info(filesize=10 * 1024 * 1024)), \
+             patch("pipeline.download_video", return_value=str(fake_video)), \
+             patch("pipeline.get_video_dimensions", return_value=(0, 0)):
             await handle_link(update, context)
 
         status_msg.reply_video.assert_called_once()
@@ -260,8 +195,9 @@ class TestHandleLink:
         update.message.reply_text = AsyncMock(return_value=status_msg)
         context = _make_context()
 
-        with patch("bot.asyncio.get_running_loop") as mock_loop:
-            mock_loop.return_value.run_in_executor = _mock_executor(download_result=str(fake_video))
+        with patch("bot.get_video_info", return_value=_info()), \
+             patch("pipeline.download_video", return_value=str(fake_video)), \
+             patch("pipeline.get_video_dimensions", return_value=(0, 0)):
             await handle_link(update, context)
 
         status_msg.reply_video.assert_called_once()
@@ -278,13 +214,10 @@ class TestHandleLink:
         update.message.reply_text = AsyncMock(return_value=status_msg)
         context = _make_context()
 
-        with patch("bot.asyncio.get_running_loop") as mock_loop, \
-             patch("bot.get_video_dimensions", return_value=(0, 0)):
-            mock_loop.return_value.run_in_executor = _dispatch_executor(
-                info={"title": "V", "filesize": None, "duration": 10, "is_playlist": False, "count": 1},
-                video_path=str(fake_video),
-                compressed=None,  # la compresión no alcanza el objetivo
-            )
+        with patch("bot.get_video_info", return_value=_info()), \
+             patch("pipeline.download_video", return_value=str(fake_video)), \
+             patch("pipeline.get_video_dimensions", return_value=(0, 0)), \
+             patch("pipeline.compress_video", return_value=None):  # la compresión no alcanza el objetivo
             await handle_link(update, context)
 
         status_msg.reply_document.assert_called_once()
@@ -297,10 +230,8 @@ class TestHandleLink:
         update.message.reply_text = AsyncMock(return_value=status_msg)
         context = _make_context()
 
-        with patch("bot.asyncio.get_running_loop") as mock_loop:
-            mock_loop.return_value.run_in_executor = _mock_executor(
-                download_error=yt_dlp.DownloadError("ERROR: This video is private")
-            )
+        with patch("bot.get_video_info", return_value=_info()), \
+             patch("pipeline.download_video", side_effect=yt_dlp.DownloadError("ERROR: This video is private")):
             await handle_link(update, context)
 
         last_text = status_msg.edit_text.call_args_list[-1][0][0]
@@ -312,10 +243,8 @@ class TestHandleLink:
         update.message.reply_text = AsyncMock(return_value=status_msg)
         context = _make_context()
 
-        with patch("bot.asyncio.get_running_loop") as mock_loop:
-            mock_loop.return_value.run_in_executor = _mock_executor(
-                download_error=yt_dlp.DownloadError("ERROR: 404 not found")
-            )
+        with patch("bot.get_video_info", return_value=_info()), \
+             patch("pipeline.download_video", side_effect=yt_dlp.DownloadError("ERROR: 404 not found")):
             await handle_link(update, context)
 
         last_text = status_msg.edit_text.call_args_list[-1][0][0]
@@ -327,10 +256,8 @@ class TestHandleLink:
         update.message.reply_text = AsyncMock(return_value=status_msg)
         context = _make_context()
 
-        with patch("bot.asyncio.get_running_loop") as mock_loop:
-            mock_loop.return_value.run_in_executor = _mock_executor(
-                download_error=yt_dlp.DownloadError("ERROR: something went wrong")
-            )
+        with patch("bot.get_video_info", return_value=_info()), \
+             patch("pipeline.download_video", side_effect=yt_dlp.DownloadError("ERROR: something went wrong")):
             await handle_link(update, context)
 
         last_text = status_msg.edit_text.call_args_list[-1][0][0]
@@ -342,11 +269,10 @@ class TestHandleLink:
         update.message.reply_text = AsyncMock(return_value=status_msg)
         context = _make_context()
 
-        with patch("bot.asyncio.get_running_loop") as mock_loop:
-            mock_loop.return_value.run_in_executor = _mock_executor(
-                download_error=RuntimeError("unexpected")
-            )
+        with patch("bot.get_video_info", return_value=_info()), \
+             patch("pipeline.download_video", side_effect=RuntimeError("unexpected")):
             await handle_link(update, context)
+
         last_text = status_msg.edit_text.call_args_list[-1][0][0]
         assert "💥" in last_text
 
@@ -360,8 +286,9 @@ class TestHandleLink:
         update.message.reply_text = AsyncMock(return_value=status_msg)
         context = _make_context()
 
-        with patch("bot.asyncio.get_running_loop") as mock_loop:
-            mock_loop.return_value.run_in_executor = _mock_executor(download_result=str(fake_video))
+        with patch("bot.get_video_info", return_value=_info()), \
+             patch("pipeline.download_video", return_value=str(fake_video)), \
+             patch("pipeline.get_video_dimensions", return_value=(0, 0)):
             await handle_link(update, context)
 
         assert not fake_video.exists()
@@ -379,7 +306,14 @@ def _make_pending_update(update_id: int, text: str) -> MagicMock:
 
 
 class TestPostInit:
-    async def _run(self, updates, admin_id=None):
+    async def _run(self, updates, admin_id=None, notify=True, webhook_url=""):
+        """
+        notify: valor de NOTIFY_ON_START. Por defecto está apagado en config (para no
+        spamear al admin en cada cold start de Render), así que los tests que esperan
+        el aviso lo activan explícitamente.
+        webhook_url: "" fuerza el modo polling, la única rama que consulta la cola de
+        updates pendientes y levanta el health server.
+        """
         application = MagicMock()
         application.bot.get_updates = AsyncMock(return_value=updates)
         application.bot.send_message = AsyncMock()
@@ -389,6 +323,8 @@ class TestPostInit:
         bot._duplicate_update_ids.clear()
 
         with patch("bot.ADMIN_CHAT_ID", admin_id), \
+             patch("bot.NOTIFY_ON_START", notify), \
+             patch("bot.WEBHOOK_URL", webhook_url), \
              patch("bot.asyncio.start_server", new_callable=AsyncMock):
             await post_init(application)
 
@@ -411,6 +347,16 @@ class TestPostInit:
     async def test_no_notification_when_no_admin_id(self):
         app = await self._run(updates=[], admin_id=None)
         app.bot.send_message.assert_not_called()
+
+    async def test_no_notification_when_notify_on_start_disabled(self):
+        # Comportamiento por defecto: hay admin, pero NOTIFY_ON_START está apagado.
+        app = await self._run(updates=[], admin_id="999", notify=False)
+        app.bot.send_message.assert_not_called()
+
+    async def test_webhook_mode_skips_update_queue_peek(self):
+        # getUpdates es incompatible con un webhook activo: en esa rama no se llama.
+        app = await self._run(updates=[], admin_id="999", webhook_url="https://x.dev")
+        app.bot.get_updates.assert_not_called()
 
     async def test_detects_duplicate_urls(self):
         updates = [
@@ -474,137 +420,12 @@ class TestDuplicateQueueSuppression:
         status_msg = AsyncMock()
         update.message.reply_text = AsyncMock(return_value=status_msg)
 
-        with patch("bot.asyncio.get_running_loop") as mock_loop:
-            mock_loop.return_value.run_in_executor = _mock_executor(download_result=str(fake_video))
+        with patch("bot.get_video_info", return_value=_info()), \
+             patch("pipeline.download_video", return_value=str(fake_video)), \
+             patch("pipeline.get_video_dimensions", return_value=(0, 0)):
             await handle_link(update, _make_context())
 
         status_msg.reply_video.assert_called_once()
-
-
-# ---------------------------------------------------------------------------
-# Concurrent download limit
-# ---------------------------------------------------------------------------
-
-class TestConcurrentDownloadLimit:
-    async def test_shows_queue_message_before_download(self, tmp_path):
-        fake_video = tmp_path / "video.mp4"
-        fake_video.write_bytes(b"data")
-
-        update = _make_update("https://www.tiktok.com/@user/video/123")
-        status_msg = AsyncMock()
-        update.message.reply_text = AsyncMock(return_value=status_msg)
-        context = _make_context()
-
-        with patch("bot.asyncio.get_running_loop") as mock_loop:
-            mock_loop.return_value.run_in_executor = _mock_executor(download_result=str(fake_video))
-            await handle_link(update, context)
-
-        all_texts = [call[0][0] for call in status_msg.edit_text.call_args_list]
-        assert any("⏳" in t for t in all_texts)
-
-    async def test_blocks_when_semaphore_full(self, tmp_path):
-        """Una petición emite 'En cola' y queda bloqueada si el semáforo está lleno."""
-        import asyncio as _asyncio
-        import bot
-
-        fake_video = tmp_path / "video.mp4"
-        fake_video.write_bytes(b"data")
-
-        queue_texts: list[str] = []
-        update = _make_update("https://www.tiktok.com/@user/video/123")
-        status_msg = AsyncMock()
-
-        async def track_edit(text, **kwargs):
-            queue_texts.append(text)
-
-        status_msg.edit_text = AsyncMock(side_effect=track_edit)
-        update.message.reply_text = AsyncMock(return_value=status_msg)
-
-        original = bot._download_semaphore
-        bot._download_semaphore = _asyncio.Semaphore(0)  # todos los slots ocupados
-
-        try:
-            with patch("bot.asyncio.get_running_loop") as mock_loop:
-                mock_loop.return_value.run_in_executor = _mock_executor(download_result=str(fake_video))
-                task = _asyncio.create_task(handle_link(update, _make_context()))
-                # Damos varios ciclos al event loop para que el task llegue al semáforo
-                for _ in range(10):
-                    await _asyncio.sleep(0)
-
-            # El task debe estar bloqueado esperando el semáforo
-            assert not task.done()
-            assert any("⏳" in t for t in queue_texts)
-        finally:
-            bot._download_semaphore = original
-            task.cancel()
-            try:
-                await task
-            except _asyncio.CancelledError:
-                pass
-
-
-# ---------------------------------------------------------------------------
-# _make_progress_callback
-# ---------------------------------------------------------------------------
-
-class TestMakeProgressCallback:
-    def _make_cb(self):
-        loop = MagicMock()
-        status_msg = AsyncMock()
-        cb = _make_progress_callback(loop, status_msg)
-        return cb, loop, status_msg
-
-    def test_downloading_status_triggers_update(self):
-        cb, loop, _ = self._make_cb()
-        with patch("bot.asyncio.run_coroutine_threadsafe") as mock_rct:
-            cb("downloading")
-        assert mock_rct.call_count == 1
-
-    def test_finished_status_triggers_update(self):
-        cb, loop, _ = self._make_cb()
-        with patch("bot.asyncio.run_coroutine_threadsafe") as mock_rct:
-            cb("downloading")
-            cb("finished")
-        assert mock_rct.call_count == 2
-
-    def test_same_status_repeated_does_not_trigger(self):
-        cb, loop, _ = self._make_cb()
-        with patch("bot.asyncio.run_coroutine_threadsafe") as mock_rct:
-            cb("downloading")
-            cb("downloading")
-            cb("downloading")
-        assert mock_rct.call_count == 1
-
-    def test_unknown_status_ignored(self):
-        cb, loop, _ = self._make_cb()
-        with patch("bot.asyncio.run_coroutine_threadsafe") as mock_rct:
-            cb("error")
-            cb("processing")
-            cb("")
-        assert mock_rct.call_count == 0
-
-
-# ---------------------------------------------------------------------------
-# _is_youtube_url
-# ---------------------------------------------------------------------------
-
-class TestIsYoutubeUrl:
-    @pytest.mark.parametrize("url", [
-        "https://www.youtube.com/watch?v=abc",
-        "https://youtu.be/abc123",
-        "https://youtube.com/shorts/abc",
-        "https://music.youtube.com/watch?v=abc",
-    ])
-    def test_youtube_urls_detected(self, url):
-        assert _is_youtube_url(url) is True
-
-    @pytest.mark.parametrize("url", [
-        "https://www.tiktok.com/@user/video/123",
-        "https://www.instagram.com/reel/abc/",
-        "https://x.com/user/status/123",
-    ])
-    def test_non_youtube_urls_rejected(self, url):
-        assert _is_youtube_url(url) is False
 
 
 # ---------------------------------------------------------------------------
@@ -618,10 +439,7 @@ class TestYoutubeFormatKeyboard:
         update.message.reply_text = AsyncMock(return_value=status_msg)
         context = _make_context()
 
-        with patch("bot.asyncio.get_running_loop") as mock_loop:
-            mock_loop.return_value.run_in_executor = _mock_executor(
-                info={"title": "Test", "filesize": None, "duration": 60, "is_music": False}
-            )
+        with patch("bot.get_video_info", return_value=_info(title="Test", duration=60, is_music=False)):
             await handle_link(update, context)
 
         status_msg.edit_text.assert_called_once()
@@ -634,10 +452,7 @@ class TestYoutubeFormatKeyboard:
         update.message.reply_text = AsyncMock(return_value=status_msg)
         context = _make_context()
 
-        with patch("bot.asyncio.get_running_loop") as mock_loop:
-            mock_loop.return_value.run_in_executor = _mock_executor(
-                info={"title": "Song", "filesize": None, "duration": 200, "is_music": True}
-            )
+        with patch("bot.get_video_info", return_value=_info(title="Song", duration=200, is_music=True)):
             await handle_link(update, context)
 
         text = status_msg.edit_text.call_args[0][0]
@@ -652,8 +467,9 @@ class TestYoutubeFormatKeyboard:
         update.message.reply_text = AsyncMock(return_value=status_msg)
         context = _make_context()
 
-        with patch("bot.asyncio.get_running_loop") as mock_loop:
-            mock_loop.return_value.run_in_executor = _mock_executor(download_result=str(fake_video))
+        with patch("bot.get_video_info", return_value=_info()), \
+             patch("pipeline.download_video", return_value=str(fake_video)), \
+             patch("pipeline.get_video_dimensions", return_value=(0, 0)):
             await handle_link(update, context)
 
         status_msg.reply_video.assert_called_once()
@@ -702,8 +518,8 @@ class TestHandleFormatChoice:
         import bot
         bot._pending[42] = {"url": "https://youtu.be/abc", "status_msg": update.callback_query.message}
 
-        with patch("bot.asyncio.get_running_loop") as mock_loop:
-            mock_loop.return_value.run_in_executor = AsyncMock(return_value=str(fake_video))
+        with patch("pipeline.download_video", return_value=str(fake_video)), \
+             patch("pipeline.get_video_dimensions", return_value=(0, 0)):
             await handle_format_choice(update, context)
 
         update.callback_query.message.reply_video.assert_called_once()
@@ -718,11 +534,8 @@ class TestHandleFormatChoice:
         import bot
         bot._pending[43] = {"url": "https://youtu.be/abc", "status_msg": update.callback_query.message}
 
-        with patch("bot.asyncio.get_running_loop") as mock_loop:
-            mock_loop.return_value.run_in_executor = _mock_audio_executor(
-                audio_info={"filesize": None},
-                download_result=(str(fake_audio), {"title": "Song Title", "artist": "Cool Artist"}),
-            )
+        with patch("bot.get_audio_info", return_value={"filesize": None}), \
+             patch("pipeline.download_audio", return_value=(str(fake_audio), {"title": "Song Title", "artist": "Cool Artist"})):
             await handle_format_choice(update, context)
 
         update.callback_query.message.reply_audio.assert_called_once()
@@ -741,11 +554,8 @@ class TestHandleFormatChoice:
         import bot
         bot._pending[44] = {"url": "https://youtu.be/abc", "status_msg": update.callback_query.message}
 
-        with patch("bot.asyncio.get_running_loop") as mock_loop:
-            mock_loop.return_value.run_in_executor = _mock_audio_executor(
-                audio_info={"filesize": None},
-                download_result=(str(fake_audio), {"title": "Just A Title", "artist": None}),
-            )
+        with patch("bot.get_audio_info", return_value={"filesize": None}), \
+             patch("pipeline.download_audio", return_value=(str(fake_audio), {"title": "Just A Title", "artist": None})):
             await handle_format_choice(update, context)
 
         call_kwargs = update.callback_query.message.reply_audio.call_args.kwargs
@@ -759,10 +569,7 @@ class TestHandleFormatChoice:
         import bot
         bot._pending[45] = {"url": "https://youtu.be/abc", "status_msg": update.callback_query.message}
 
-        with patch("bot.asyncio.get_running_loop") as mock_loop:
-            mock_loop.return_value.run_in_executor = _mock_audio_executor(
-                audio_info={"filesize": 150 * 1024 * 1024 + 1},
-            )
+        with patch("bot.get_audio_info", return_value={"filesize": 150 * 1024 * 1024 + 1}):
             await handle_format_choice(update, context)
 
         update.callback_query.message.reply_audio.assert_not_called()
@@ -879,47 +686,6 @@ class TestCmdAdminStats:
 # Nuevas features: multi-link, carrusel, botón MP3
 # ---------------------------------------------------------------------------
 
-def _dispatch_executor(info=None, video_path=None, audio_result=None, post_items=None, audio_info=None, compressed=None, song_result=None):
-    """Executor que despacha según el nombre de la función llamada en run_in_executor."""
-    video_paths = list(video_path) if isinstance(video_path, list) else None
-
-    async def _se(executor, func, *args):
-        name = getattr(func, "__name__", "")
-        if name == "get_video_info":
-            return info
-        if name == "get_audio_info":
-            return audio_info
-        if name == "download_video":
-            return video_paths.pop(0) if video_paths is not None else video_path
-        if name == "download_audio":
-            return audio_result
-        if name == "download_song":
-            return song_result
-        if name == "download_post":
-            return post_items
-        if name == "compress_video":
-            return compressed
-        return None
-
-    return AsyncMock(side_effect=_se)
-
-
-class TestExtractUrls:
-    def test_extracts_multiple_unique(self):
-        text = "https://www.tiktok.com/@u/video/1 mira esto https://x.com/u/status/2"
-        assert _extract_urls(text) == [
-            "https://www.tiktok.com/@u/video/1",
-            "https://x.com/u/status/2",
-        ]
-
-    def test_dedupes_and_drops_unsupported(self):
-        text = "https://youtu.be/a https://youtu.be/a https://reddit.com/x"
-        assert _extract_urls(text) == ["https://youtu.be/a"]
-
-    def test_empty_when_none(self):
-        assert _extract_urls("solo texto sin links") == []
-
-
 class TestMultiLink:
     async def test_processes_each_link(self, tmp_path, mock_db_and_rate_limiter):
         f1 = tmp_path / "a.mp4"; f1.write_bytes(b"d")
@@ -929,12 +695,9 @@ class TestMultiLink:
         update.message.reply_text = AsyncMock(return_value=AsyncMock())
         context = _make_context()
 
-        with patch("bot.asyncio.get_running_loop") as mock_loop, \
-             patch("bot.get_video_dimensions", return_value=(0, 0)):
-            mock_loop.return_value.run_in_executor = _dispatch_executor(
-                info={"title": "V", "filesize": None, "duration": 10, "is_playlist": False, "count": 1},
-                video_path=[str(f1), str(f2)],
-            )
+        with patch("bot.get_video_info", return_value=_info()), \
+             patch("pipeline.download_video", side_effect=[str(f1), str(f2)]), \
+             patch("pipeline.get_video_dimensions", return_value=(0, 0)):
             await handle_link(update, context)
 
         # dos links → dos verificaciones de rate limit y dos status messages
@@ -949,12 +712,9 @@ class TestMultiLink:
         update.message.reply_text = AsyncMock(return_value=AsyncMock())
         context = _make_context()
 
-        with patch("bot.asyncio.get_running_loop") as mock_loop, \
-             patch("bot.get_video_dimensions", return_value=(0, 0)):
-            mock_loop.return_value.run_in_executor = _dispatch_executor(
-                info={"title": "V", "filesize": None, "duration": 10, "is_playlist": False, "count": 1},
-                video_path=[str(f1)],
-            )
+        with patch("bot.get_video_info", return_value=_info()), \
+             patch("pipeline.download_video", return_value=str(f1)), \
+             patch("pipeline.get_video_dimensions", return_value=(0, 0)):
             await handle_link(update, context)
 
         texts = [c[0][0] for c in update.message.reply_text.call_args_list]
@@ -971,11 +731,8 @@ class TestCarousel:
         update.message.reply_text = AsyncMock(return_value=status_msg)
         context = _make_context()
 
-        with patch("bot.asyncio.get_running_loop") as mock_loop:
-            mock_loop.return_value.run_in_executor = _dispatch_executor(
-                info={"is_playlist": True, "count": 2, "filesize": None},
-                post_items=items,
-            )
+        with patch("bot.get_video_info", return_value=_info(is_playlist=True, count=2)), \
+             patch("pipeline.download_post", return_value=items):
             await handle_link(update, context)
 
         status_msg.reply_media_group.assert_called_once()
@@ -994,13 +751,9 @@ class TestSongButton:
         update.message.reply_text = AsyncMock(return_value=status_msg)
         context = _make_context()
 
-        with patch("bot.asyncio.get_running_loop") as mock_loop, \
-             patch("bot.get_video_dimensions", return_value=(0, 0)):
-            mock_loop.return_value.run_in_executor = _dispatch_executor(
-                info={"title": "V", "filesize": None, "duration": 10, "is_playlist": False,
-                      "count": 1, "song": {"track": "Flowers", "artist": "Miley Cyrus"}},
-                video_path=str(fake),
-            )
+        with patch("bot.get_video_info", return_value=_info(song={"track": "Flowers", "artist": "Miley Cyrus"})), \
+             patch("pipeline.download_video", return_value=str(fake)), \
+             patch("pipeline.get_video_dimensions", return_value=(0, 0)):
             await handle_link(update, context)
 
         kb = status_msg.reply_video.call_args.kwargs["reply_markup"]
@@ -1015,13 +768,9 @@ class TestSongButton:
         update.message.reply_text = AsyncMock(return_value=status_msg)
         context = _make_context()
 
-        with patch("bot.asyncio.get_running_loop") as mock_loop, \
-             patch("bot.get_video_dimensions", return_value=(0, 0)):
-            mock_loop.return_value.run_in_executor = _dispatch_executor(
-                info={"title": "V", "filesize": None, "duration": 10, "is_playlist": False,
-                      "count": 1, "song": None},
-                video_path=str(fake),
-            )
+        with patch("bot.get_video_info", return_value=_info(song=None)), \
+             patch("pipeline.download_video", return_value=str(fake)), \
+             patch("pipeline.get_video_dimensions", return_value=(0, 0)):
             await handle_link(update, context)
 
         assert status_msg.reply_video.call_args.kwargs["reply_markup"] is None
@@ -1052,10 +801,7 @@ class TestSongDownload:
         update.callback_query.message.reply_text = AsyncMock(return_value=status_msg)
         context = _make_context()
 
-        with patch("bot.asyncio.get_running_loop") as mock_loop:
-            mock_loop.return_value.run_in_executor = _dispatch_executor(
-                song_result=(str(fake), {"title": "Flowers", "artist": "Miley Cyrus"}),
-            )
+        with patch("pipeline.download_song", return_value=(str(fake), {"title": "Flowers", "artist": "Miley Cyrus"})):
             await handle_song_download(update, context)
 
         status_msg.reply_audio.assert_called_once()
@@ -1071,14 +817,11 @@ class TestCompressionInDownload:
         update.message.reply_text = AsyncMock(return_value=status_msg)
         context = _make_context()
 
-        with patch("bot.asyncio.get_running_loop") as mock_loop, \
-             patch("bot.get_video_dimensions", return_value=(0, 0)), \
-             patch("bot.os.path.getsize", return_value=60 * 1024 * 1024):
-            mock_loop.return_value.run_in_executor = _dispatch_executor(
-                info={"title": "V", "filesize": None, "duration": 10, "is_playlist": False, "count": 1},
-                video_path=str(big),
-                compressed=str(comp),
-            )
+        with patch("bot.get_video_info", return_value=_info()), \
+             patch("pipeline.download_video", return_value=str(big)), \
+             patch("pipeline.get_video_dimensions", return_value=(0, 0)), \
+             patch("pipeline.os.path.getsize", return_value=60 * 1024 * 1024), \
+             patch("pipeline.compress_video", return_value=str(comp)):
             await handle_link(update, context)
 
         status_msg.reply_video.assert_called_once()
@@ -1091,14 +834,11 @@ class TestCompressionInDownload:
         update.message.reply_text = AsyncMock(return_value=status_msg)
         context = _make_context()
 
-        with patch("bot.asyncio.get_running_loop") as mock_loop, \
-             patch("bot.get_video_dimensions", return_value=(0, 0)), \
-             patch("bot.os.path.getsize", return_value=60 * 1024 * 1024):
-            mock_loop.return_value.run_in_executor = _dispatch_executor(
-                info={"title": "V", "filesize": None, "duration": 10, "is_playlist": False, "count": 1},
-                video_path=str(big),
-                compressed=None,
-            )
+        with patch("bot.get_video_info", return_value=_info()), \
+             patch("pipeline.download_video", return_value=str(big)), \
+             patch("pipeline.get_video_dimensions", return_value=(0, 0)), \
+             patch("pipeline.os.path.getsize", return_value=60 * 1024 * 1024), \
+             patch("pipeline.compress_video", return_value=None):
             await handle_link(update, context)
 
         status_msg.reply_document.assert_called_once()
