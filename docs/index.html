@@ -77,9 +77,27 @@
   h1 { font-size: clamp(1.625rem, 5vw, 2.125rem); font-weight: 700; letter-spacing: -.026em; margin: 0 0 .5rem; }
   header p { color: var(--muted); font-size: .9375rem; line-height: 1.5; margin: 0; letter-spacing: -.006em; }
 
+  /* Debajo de 60rem (tablets y celulares) todo se apila en una sola columna centrada,
+     como hoy. A partir de ahí la cabecera y la tarjeta pasan a convivir lado a lado:
+     en pantallas anchas, una columna angosta centrada dejaba demasiado espacio vacío
+     alrededor — acá la funcionalidad (la tarjeta) queda visible junto a la explicación,
+     no apilada muy por debajo de un título suelto. */
+  .hero { display: flex; flex-direction: column; align-items: center; width: 100%; }
+  @media (min-width: 60rem) {
+    .hero {
+      flex-direction: row; align-items: center; justify-content: center;
+      gap: 3.5rem; max-width: 62rem; margin: 0 auto;
+    }
+    .hero header { text-align: left; max-width: 26rem; margin-bottom: 0; flex: 1 1 26rem; }
+    .hero header h1 { font-size: clamp(2.5rem, 3.4vw, 3.25rem); }
+    .hero header p { font-size: 1.0625rem; line-height: 1.6; }
+    .hero .card { flex: 0 0 26rem; }
+  }
+
   /* En flujo normal (no position:fixed) a propósito: flotar en una esquina fija
      terminaba superponiéndose al título en viewports angostos. */
   .topbar { width: 100%; max-width: 26rem; display: flex; justify-content: flex-end; margin-bottom: 1rem; }
+  @media (min-width: 60rem) { .topbar { max-width: 62rem; } }
   .theme-picker select {
     appearance: none; -webkit-appearance: none; cursor: pointer;
     font-family: var(--sans); font-size: .75rem; font-weight: 600; letter-spacing: .006em; color: var(--ink);
@@ -210,6 +228,10 @@
     background: var(--surface); border: 1px solid var(--hair); border-radius: 1rem;
     padding: .875rem 1rem; box-shadow: var(--shadow);
   }
+  @media (min-width: 60rem) {
+    .features { max-width: 62rem; margin-top: 3.5rem; }
+    .feature-list { display: grid; grid-template-columns: repeat(3, 1fr); gap: 1rem; }
+  }
   .feature-icon {
     flex-shrink: 0; width: 2.25rem; height: 2.25rem; border-radius: .625rem;
     background: var(--accent-wash); color: var(--accent);
@@ -263,39 +285,41 @@
     </div>
   </div>
 
-  <header>
-    <h1>Videito</h1>
-    <p>Pega un link de TikTok, Instagram, Facebook, YouTube o X. Verificamos el enlace y te mostramos una vista previa antes de descargar.</p>
-  </header>
+  <div class="hero">
+    <header>
+      <h1>Videito</h1>
+      <p>Descarga video o solo el audio en MP3, en la calidad que quieras, desde TikTok, Instagram, Facebook, YouTube y X. Verificamos el link y te mostramos una vista previa antes de bajar nada, sin instalar apps ni iniciar sesión.</p>
+    </header>
 
-  <main class="card">
-    <div class="field">
-      <label for="url" class="visually-hidden">Enlace del video</label>
-      <input id="url" type="text" inputmode="url" autocomplete="off" spellcheck="false"
-             placeholder="https://www.tiktok.com/@usuario/video/...">
-    </div>
-
-    <span id="chip" class="chip">Esperando un enlace</span>
-
-    <div id="previewArea"></div>
-
-    <div class="row">
-      <div class="seg" role="group" aria-label="Formato">
-        <button type="button" id="kind-video" class="active" aria-pressed="true">Video</button>
-        <button type="button" id="kind-audio" aria-pressed="false">Audio (MP3)</button>
+    <main class="card">
+      <div class="field">
+        <label for="url" class="visually-hidden">Enlace del video</label>
+        <input id="url" type="text" inputmode="url" autocomplete="off" spellcheck="false"
+               placeholder="https://www.tiktok.com/@usuario/video/...">
       </div>
-      <select id="resolution" aria-label="Resolución máxima">
-        <option value="1080">1080p</option>
-        <option value="720">720p</option>
-        <option value="480">480p</option>
-        <option value="360">360p</option>
-      </select>
-    </div>
 
-    <button id="go" class="btn" disabled>Descargar</button>
+      <span id="chip" class="chip">Esperando un enlace</span>
 
-    <div id="stage" class="stage"></div>
-  </main>
+      <div id="previewArea"></div>
+
+      <div class="row">
+        <div class="seg" role="group" aria-label="Formato">
+          <button type="button" id="kind-video" class="active" aria-pressed="true">Video</button>
+          <button type="button" id="kind-audio" aria-pressed="false">Audio (MP3)</button>
+        </div>
+        <select id="resolution" aria-label="Resolución máxima">
+          <option value="1080">1080p</option>
+          <option value="720">720p</option>
+          <option value="480">480p</option>
+          <option value="360">360p</option>
+        </select>
+      </div>
+
+      <button id="go" class="btn" disabled>Descargar</button>
+
+      <div id="stage" class="stage"></div>
+    </main>
+  </div>
 
   <section class="features">
     <h2>Ventajas frente a las apps</h2>
