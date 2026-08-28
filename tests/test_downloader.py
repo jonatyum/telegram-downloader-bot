@@ -4,7 +4,7 @@ import pytest
 import yt_dlp
 from unittest.mock import MagicMock, patch, call
 
-from downloader import download_video, download_audio, download_post, _make_output_path, get_video_dimensions, get_video_info, get_audio_info, _estimate_filesize, _run_with_retry, _is_transient_error, fetch_thumbnail
+from downloader import download_video, download_audio, download_post, _make_output_path, get_video_dimensions, get_video_info, get_audio_info, _estimate_filesize, _run_with_retry, _is_transient_error, fetch_thumbnail, _has_audio_stream, _warn_if_silent
 from config import DOWNLOAD_DIR, MAX_DOWNLOAD_ATTEMPTS, MAX_VIDEO_HEIGHT
 
 
@@ -468,6 +468,42 @@ class TestFetchThumbnail:
     def test_accepts_exactly_max_bytes(self):
         with patch("downloader.urllib.request.urlopen", return_value=self._mock_response(b"x" * 50)):
             assert fetch_thumbnail("https://cdn/thumb.jpg", max_bytes=50) == b"x" * 50
+
+
+class TestHasAudioStream:
+    def test_true_when_ffprobe_lists_an_audio_stream(self, tmp_path):
+        fake = tmp_path / "v.mp4"; fake.write_bytes(b"d")
+        mock_result = MagicMock(stdout="0\n")  # ffprobe lista el índice del stream de audio
+        with patch("downloader.subprocess.run", return_value=mock_result):
+            assert _has_audio_stream(str(fake)) is True
+
+    def test_false_when_ffprobe_lists_nothing(self, tmp_path):
+        fake = tmp_path / "v.mp4"; fake.write_bytes(b"d")
+        mock_result = MagicMock(stdout="")  # sin streams de audio
+        with patch("downloader.subprocess.run", return_value=mock_result):
+            assert _has_audio_stream(str(fake)) is False
+
+    def test_true_on_ffprobe_failure(self, tmp_path):
+        # Si ffprobe falla, no queremos bloquear la entrega por un chequeo que no corrió.
+        fake = tmp_path / "v.mp4"; fake.write_bytes(b"d")
+        with patch("downloader.subprocess.run", side_effect=Exception("ffprobe no encontrado")):
+            assert _has_audio_stream(str(fake)) is True
+
+
+class TestWarnIfSilent:
+    def test_logs_warning_when_no_audio(self, tmp_path, caplog):
+        fake = tmp_path / "v.mp4"; fake.write_bytes(b"d")
+        with patch("downloader._has_audio_stream", return_value=False):
+            with caplog.at_level("WARNING", logger="downloader"):
+                _warn_if_silent(str(fake), "https://tiktok.com/@u/video/1", 2160)
+        assert any("sin pista de audio" in r.message for r in caplog.records)
+
+    def test_no_warning_when_audio_present(self, tmp_path, caplog):
+        fake = tmp_path / "v.mp4"; fake.write_bytes(b"d")
+        with patch("downloader._has_audio_stream", return_value=True):
+            with caplog.at_level("WARNING", logger="downloader"):
+                _warn_if_silent(str(fake), "https://tiktok.com/@u/video/1", 2160)
+        assert not any("sin pista de audio" in r.message for r in caplog.records)
 
 
 class TestGetVideoDimensions:

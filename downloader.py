@@ -265,6 +265,38 @@ def _video_codec(filepath: str) -> str | None:
     return _video_stream_info(filepath)[0]
 
 
+def _has_audio_stream(filepath: str) -> bool:
+    """True si el archivo tiene al menos un stream de audio, según ffprobe."""
+    try:
+        result = subprocess.run(
+            ["ffprobe", "-v", "error", "-select_streams", "a",
+             "-show_entries", "stream=index", "-of", "csv=p=0", filepath],
+            capture_output=True, text=True, timeout=10,
+        )
+        return bool(result.stdout.strip())
+    except Exception:
+        return True  # si ffprobe falla, no bloqueamos la entrega por un chequeo que no pudo correr
+
+
+def _warn_if_silent(filepath: str, url: str, max_height: int | None) -> None:
+    """
+    Red de seguridad: el selector de formato prioriza audio siempre que hay una
+    alternativa combinada disponible, pero TikTok (sobre todo con música con licencia
+    restringida) a veces solo ofrece un stream sin audio, y esto puede variar entre
+    requests al mismo video. No hay forma de "arreglarlo" del lado del cliente — esto
+    deja rastro en los logs para poder correlacionar en vez de entregarlo en silencio
+    sin ninguna señal de qué pasó.
+    """
+    if not _has_audio_stream(filepath):
+        logger.warning(
+            "%s se descargó sin pista de audio (url=%s, max_height=%s). Puede ser una "
+            "restricción de la plataforma origen (audio con licencia restringida) o "
+            "variación del CDN entre requests al mismo video, no necesariamente un bug "
+            "del selector de formato.",
+            filepath, url, max_height,
+        )
+
+
 def _ensure_h264(filepath: str) -> str:
     """
     Red de seguridad de compatibilidad: Telegram (y iOS/QuickTime) no reproducen VP9/AV1
@@ -428,7 +460,9 @@ def download_video(url: str, on_progress: Callable[[str], None] | None = None, m
 
     filename = _run_with_retry(_do_download)
     filename = _ensure_h264(filename)
-    return _fix_stream_loop(filename)
+    filename = _fix_stream_loop(filename)
+    _warn_if_silent(filename, url, max_height)
+    return filename
 
 
 def download_post(
@@ -491,6 +525,7 @@ def download_post(
                 # (o H.264 10-bit) se vería congelado en el álbum de Telegram.
                 if kind == "video":
                     path = _ensure_h264(path)
+                    _warn_if_silent(path, url, max_height)
                 items.append({"path": path, "kind": kind})
         return items
 
