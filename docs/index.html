@@ -532,6 +532,8 @@
   var kind = "video";
   var running = false;
   var currentSource = null;
+  var jobDone = false; // true una vez que hay un resultado listo: "Descargar" se esconde,
+                        // "Guardar archivo" ya es la única acción — mostrar los dos a la vez confunde.
 
   // ---------- Previsualización: verifica el link y muestra foto+título antes de dejar
   // descargar. Se dispara con debounce al escribir; un contador de secuencia descarta
@@ -561,7 +563,9 @@
   function clearPreview() {
     previewSeq++;
     previewReady = false;
+    jobDone = false; // link nuevo: si había un resultado mostrado, vuelve a mostrarse "Descargar"
     previewArea.innerHTML = "";
+    stage.innerHTML = ""; // no dejar el resultado/error de un link anterior colgando debajo
     updateGoState();
   }
 
@@ -641,12 +645,15 @@
     if (!isSupported(url)) { clearPreview(); return; }
     previewSeq++; // invalida cualquier verificación anterior en vuelo mientras se espera el debounce
     previewReady = false;
+    jobDone = false; // link nuevo: si había un resultado mostrado, vuelve a mostrarse "Descargar"
     previewArea.innerHTML = "";
+    stage.innerHTML = ""; // no dejar el resultado/error de un link anterior colgando debajo
     updateGoState();
     previewTimer = setTimeout(function () { runPreview(url); }, PREVIEW_DEBOUNCE_MS);
   }
 
   function updateGoState() {
+    go.style.display = jobDone ? "none" : "";
     go.disabled = !previewReady || running;
   }
 
@@ -686,6 +693,7 @@
   }
 
   function showResult(jobId, files) {
+    jobDone = true; // "Guardar archivo" pasa a ser la única acción: se esconde "Descargar".
     var html = "";
     if (files <= 1) {
       html = '<a class="btn" href="' + API_BASE + "/jobs/" + jobId + '/file" download>Guardar archivo</a>';
@@ -707,7 +715,8 @@
   }
 
   async function start() {
-    if (!previewReady) return; // el gate real: sin previsualización exitosa no se descarga
+    if (!previewReady || jobDone) return; // sin preview, o ya hay un resultado listo: no hay nada que iniciar
+    if (running) return;
     running = true;
     go.disabled = true;
     showProgress("Enviando...");
