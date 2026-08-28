@@ -1,23 +1,30 @@
 # Telegram Video Downloader Bot
 
-Bot de Telegram que descarga videos de TikTok, Instagram, Facebook, YouTube y X/Twitter a partir de un link y los envía de vuelta al usuario.
+Descarga videos de TikTok, Instagram, Facebook, YouTube y X/Twitter a partir de un link,
+por dos canales que comparten el mismo motor: un **bot de Telegram** y una **web**
+(frontend estático en GitHub Pages + API en Render). Ver `CLAUDE.md` para el detalle de
+la arquitectura y las decisiones de diseño.
 
 ## Arquitectura
 
 ```
 telegram-downloader-bot/
-├── bot.py              # Entry point: handlers de Telegram y lógica principal
-├── downloader.py       # Descarga de videos con yt-dlp
+├── bot.py             # Entry point del bot: handlers de Telegram, routing/presentación
+├── api.py             # Entry point de la API web (FastAPI): jobs, SSE, servido de archivos
+├── pipeline.py         # Orquesta una descarga ya decidida — no sabe de Telegram ni de HTTP
+├── links.py            # Detección de links soportados, compartida por bot.py y api.py
+├── downloader.py       # Descarga de videos con yt-dlp + ffmpeg
 ├── config.py           # Configuración centralizada desde variables de entorno
-├── database.py         # Registro de usuarios en SQLite
-├── rate_limiter.py     # Rate limiting por usuario (ventana deslizante)
-├── bot.db              # Base de datos SQLite (generada en runtime, no en git)
+├── database.py         # Registro de usuarios en Postgres (Supabase) — solo el bot
+├── rate_limiter.py     # Rate limiting (ventana deslizante), por user_id o por IP
+├── docs/                # Frontend estático para GitHub Pages (Settings → Pages → /docs)
 ├── .env                # Variables de entorno locales (no subir a git)
 ├── .env.example        # Plantilla de variables de entorno
 ├── .gitignore
 ├── requirements.txt
-├── Dockerfile          # Para deployment en Railway/Render
-└── railway.toml        # Configuración de Railway
+├── Dockerfile           # Servicio del bot en Render
+├── Dockerfile.api       # Servicio de la API web en Render (separado del bot)
+└── render.yaml          # Los dos servicios de Render
 ```
 
 ## Flujo de datos
@@ -69,17 +76,38 @@ cp .env.example .env
 python bot.py
 ```
 
-## Deployment (Railway.app)
+## Canal web
 
-1. Push a GitHub
-2. Crear proyecto en Railway → conectar repo
-3. Agregar variable de entorno `BOT_TOKEN`
-4. Deploy automático
+```bash
+uvicorn api:app --reload --port 8000
+```
+
+Sirve la misma funcionalidad sin el límite de 50 MB de Telegram — el archivo se sirve
+por streaming desde disco, y el progreso se manda por SSE con porcentaje real. Para
+probar el frontend local, abre `docs/index.html` y edita la constante `API_BASE` al
+principio del `<script>` para que apunte a `http://localhost:8000`.
+
+## Deployment
+
+**Render** (`render.yaml`) despliega el bot y la API web como **dos servicios
+independientes** — no comparten proceso ni RAM, así que un pico de tráfico en uno no
+afecta al otro. Cada uno con su propio Dockerfile (`Dockerfile` / `Dockerfile.api`).
+
+El frontend (`docs/`) se sirve aparte, en **GitHub Pages**: Settings → Pages → Source →
+rama `main`, carpeta `/docs`. No hace falta ninguna GitHub Action. Tras el primer
+deploy, hay que:
+1. Poner la URL real del servicio `telegram-downloader-api` en la env var `WEB_ORIGINS`
+   del backend (para que CORS deje pasar al frontend).
+2. Poner la URL real de GitHub Pages en la constante `API_BASE` de `docs/index.html`.
+
+`railway.toml` sigue en el repo como alternativa para el bot.
 
 ## Stack
 
-- **Python 3.11+**
+- **Python 3.13**
 - **python-telegram-bot v21** — framework async para Telegram Bot API
+- **FastAPI + uvicorn** — API del canal web
 - **yt-dlp** — motor de descarga (fork activo de youtube-dl)
 - **ffmpeg** — procesamiento de video/audio
-- **Railway.app** — hosting gratuito
+- **Postgres (Supabase)** — usuarios del bot, vía `psycopg`
+- **Render** — hosting de los dos servicios · **GitHub Pages** — hosting del frontend

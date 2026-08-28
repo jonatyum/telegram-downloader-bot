@@ -5,6 +5,7 @@ __pycache__/
 *.pyo
 /tmp/
 downloads/
+results/
 *.mp4
 *.webm
 *.mkv
@@ -12,3 +13,4 @@ downloads/
 .idea/
 .pytest_cache/
 bot.db
+CLAUDE.md

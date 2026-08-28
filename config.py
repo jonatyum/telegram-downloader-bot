@@ -15,7 +15,10 @@ def _env_int(name: str, default: int) -> int:
         return default
 
 
-BOT_TOKEN: str = os.environ["BOT_TOKEN"]
+# Vacío por defecto (no os.environ[...]) para que módulos compartidos con el canal web
+# (api.py, que no habla con Telegram) puedan importar config sin necesitar este token.
+# bot.py valida que no esté vacío en su propio main(), donde sí es obligatorio.
+BOT_TOKEN: str = os.getenv("BOT_TOKEN", "")
 
 DOWNLOAD_DIR = os.path.join(os.path.dirname(__file__), "downloads")
 MAX_TELEGRAM_SIZE_BYTES = 50 * 1024 * 1024   # 50 MB — límite del Bot API para enviar como video

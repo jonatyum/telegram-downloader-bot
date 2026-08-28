@@ -1,0 +1,595 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Downloader</title>
+<meta name="description" content="Descarga video o audio de TikTok, Instagram, Facebook, YouTube o X directamente desde el navegador.">
+<style>
+  :root {
+    --ground:#F5F5F7; --ground-2:#EBEBF0; --surface:#FFFFFF; --sunk:#F0F0F3;
+    --ink:#1D1D1F; --ink-2:#424245; --muted:#6E6E73; --faint:#8E8E93;
+    --hair:rgba(0,0,0,.10); --hair-2:rgba(0,0,0,.16);
+    --accent:#0071E3; --accent-ink:#FFFFFF; --accent-wash:rgba(0,113,227,.10);
+    --good:#248A3D; --good-wash:rgba(52,199,89,.13);
+    --warn:#B25000; --warn-wash:rgba(255,149,0,.13);
+    --bad:#C7332B;  --bad-wash:rgba(255,59,48,.11);
+    --chrome:rgba(245,245,247,.72);
+    --shadow:0 1px 2px rgba(0,0,0,.04), 0 8px 28px -14px rgba(0,0,0,.18);
+    --lift:0 2px 6px rgba(0,0,0,.06), 0 18px 48px -20px rgba(0,0,0,.30);
+    --sans:-apple-system,BlinkMacSystemFont,"SF Pro Text","Segoe UI",system-ui,sans-serif;
+    --mono:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --ground:#000; --ground-2:#141416; --surface:#1C1C1E; --sunk:#242426;
+      --ink:#F5F5F7; --ink-2:#D6D6DA; --muted:#98989D; --faint:#7C7C81;
+      --hair:rgba(255,255,255,.12); --hair-2:rgba(255,255,255,.20);
+      --accent:#0A84FF; --accent-wash:rgba(10,132,255,.16);
+      --good:#30D158; --good-wash:rgba(48,209,88,.15);
+      --warn:#FF9F0A; --warn-wash:rgba(255,159,10,.15);
+      --bad:#FF6961;  --bad-wash:rgba(255,69,58,.15);
+      --chrome:rgba(0,0,0,.68);
+      --shadow:0 1px 2px rgba(0,0,0,.5), 0 8px 28px -14px rgba(0,0,0,.8);
+      --lift:0 2px 6px rgba(0,0,0,.55), 0 18px 48px -20px rgba(0,0,0,.9);
+    }
+  }
+  :root[data-theme="dark"] {
+    --ground:#000; --ground-2:#141416; --surface:#1C1C1E; --sunk:#242426;
+    --ink:#F5F5F7; --ink-2:#D6D6DA; --muted:#98989D; --faint:#7C7C81;
+    --hair:rgba(255,255,255,.12); --hair-2:rgba(255,255,255,.20);
+    --accent:#0A84FF; --accent-wash:rgba(10,132,255,.16);
+    --good:#30D158; --good-wash:rgba(48,209,88,.15);
+    --warn:#FF9F0A; --warn-wash:rgba(255,159,10,.15);
+    --bad:#FF6961;  --bad-wash:rgba(255,69,58,.15);
+    --chrome:rgba(0,0,0,.68);
+    --shadow:0 1px 2px rgba(0,0,0,.5), 0 8px 28px -14px rgba(0,0,0,.8);
+    --lift:0 2px 6px rgba(0,0,0,.55), 0 18px 48px -20px rgba(0,0,0,.9);
+  }
+  @media (prefers-reduced-transparency: reduce) { :root { --chrome: var(--ground); } }
+  @media (prefers-contrast: more) {
+    :root { --hair: rgba(0,0,0,.5); --muted: #3A3A3C; }
+    :root:not([data-theme="light"]) { --hair: rgba(255,255,255,.55); }
+  }
+
+  * { box-sizing: border-box; }
+  html { -webkit-text-size-adjust: 100%; }
+  body {
+    margin: 0; min-height: 100vh; background: var(--ground); color: var(--ink);
+    font-family: var(--sans); font-size: 1rem; line-height: 1.5;
+    -webkit-font-smoothing: antialiased;
+    display: flex; flex-direction: column; align-items: center;
+    padding: 4vh 1.25rem 3rem;
+  }
+
+  header { text-align: center; margin-bottom: 1.75rem; max-width: 26rem; }
+  h1 { font-size: clamp(1.625rem, 5vw, 2.125rem); font-weight: 700; letter-spacing: -.026em; margin: 0 0 .5rem; }
+  header p { color: var(--muted); font-size: .9375rem; line-height: 1.5; margin: 0; letter-spacing: -.006em; }
+
+  .card {
+    width: 100%; max-width: 26rem;
+    background: var(--surface); border: 1px solid var(--hair);
+    border-radius: 1.25rem; box-shadow: var(--lift);
+    padding: 1.5rem;
+    display: flex; flex-direction: column; gap: 1.125rem;
+  }
+  @media (max-width: 26rem) { .card { padding: 1.25rem; border-radius: 1rem; } }
+
+  .field {
+    display: flex; align-items: center; gap: .5rem;
+    background: var(--sunk); border: 1.5px solid transparent; border-radius: .75rem;
+    padding: .1875rem .1875rem .1875rem .875rem;
+    transition: border-color 160ms ease, background 160ms ease;
+  }
+  .field:focus-within { border-color: var(--accent); background: var(--surface); }
+  .field input {
+    flex: 1; min-width: 0; border: 0; background: transparent; outline: none;
+    font-family: var(--sans); font-size: 1rem; color: var(--ink); padding: .625rem 0;
+  }
+  .field input::placeholder { color: var(--faint); }
+
+  /* En pantallas angostas el segmentado y el select apenas entran uno junto al otro:
+     se apilan en vez de comprimirse hasta quedar ilegibles. */
+  .row { display: flex; gap: .625rem; flex-wrap: wrap; align-items: center; justify-content: space-between; }
+  @media (max-width: 23rem) { .row { flex-direction: column; align-items: stretch; } }
+
+  .seg { display: inline-flex; background: var(--sunk); border-radius: .625rem; padding: .1875rem; gap: .1875rem; }
+  @media (max-width: 23rem) { .seg { width: 100%; } }
+  .seg button {
+    appearance: none; border: 0; background: transparent; cursor: pointer; flex: 1;
+    font-family: var(--sans); font-size: .8125rem; font-weight: 600; letter-spacing: .006em; color: var(--muted);
+    padding: .4375rem .75rem; border-radius: .4375rem;
+    transition: background 140ms ease, color 140ms ease, transform 110ms cubic-bezier(.2,.7,.3,1);
+  }
+  .seg button.active { background: var(--surface); color: var(--ink); box-shadow: 0 1px 2px rgba(0,0,0,.08); }
+  .seg button.pressed { transform: scale(.94); }
+
+  select {
+    appearance: none; -webkit-appearance: none;
+    font-family: var(--sans); font-size: .8125rem; font-weight: 600; letter-spacing: .006em; color: var(--ink);
+    background: var(--sunk) url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="10" height="6"><path d="M1 1l4 4 4-4" stroke="%236E6E73" stroke-width="1.5" fill="none" stroke-linecap="round"/></svg>') no-repeat right .625rem center;
+    border: 0; border-radius: .625rem; padding: .5rem 1.75rem .5rem .75rem;
+  }
+  @media (max-width: 23rem) { select { width: 100%; } }
+
+  .btn {
+    appearance: none; border: 0; cursor: pointer; width: 100%;
+    background: var(--accent); color: var(--accent-ink);
+    font-family: var(--sans); font-size: .9375rem; font-weight: 600; letter-spacing: -.003em;
+    padding: .75rem; border-radius: .75rem;
+    transition: transform 110ms cubic-bezier(.2,.7,.3,1), opacity 160ms ease;
+  }
+  .btn:disabled { opacity: .4; cursor: default; }
+  .btn.pressed { transform: scale(.98); }
+  .btn.ghost { background: var(--sunk); color: var(--ink); }
+  @media (prefers-reduced-motion: reduce) {
+    .btn, .seg button { transition: opacity 160ms ease, background 140ms ease, color 140ms ease; }
+    .btn.pressed, .seg button.pressed { transform: none; }
+  }
+
+  .chip {
+    font-size: .75rem; font-weight: 600; letter-spacing: .01em; padding: .25rem .5625rem; border-radius: 62.5rem;
+    background: var(--sunk); color: var(--faint); align-self: flex-start;
+  }
+  .chip.match { background: var(--accent-wash); color: var(--accent); }
+  .chip.bad { background: var(--bad-wash); color: var(--bad); }
+
+  /* Previsualización: la miniatura se pide al backend (no al <img src> directo) porque
+     TikTok/Instagram bloquean el hotlinking de sus CDNs; el server la re-sirve embebida. */
+  .preview {
+    display: flex; gap: .75rem; align-items: center;
+    will-change: transform, opacity, filter;
+  }
+  .preview-thumb {
+    position: relative; flex-shrink: 0; width: 4.5rem; height: 4.5rem;
+    border-radius: .625rem; overflow: hidden; background: var(--sunk);
+  }
+  .preview-thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+  .preview-thumb .dur {
+    position: absolute; right: .25rem; bottom: .25rem;
+    background: rgba(0,0,0,.65); color: #fff; font-size: .625rem; font-weight: 600;
+    letter-spacing: .02em; padding: .0625rem .3125rem; border-radius: .25rem;
+    font-variant-numeric: tabular-nums;
+  }
+  .preview-text { min-width: 0; display: flex; flex-direction: column; gap: .1875rem; }
+  .preview-title {
+    font-size: .875rem; font-weight: 600; letter-spacing: -.003em;
+    overflow: hidden; text-overflow: ellipsis; display: -webkit-box;
+    -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+  }
+  .preview-sub { font-size: .75rem; color: var(--muted); }
+  .preview-checking { display: flex; align-items: center; gap: .625rem; font-size: .8125rem; color: var(--muted); }
+  .preview-checking .dot {
+    width: .5rem; height: .5rem; border-radius: 50%; background: var(--accent);
+    animation: pulse 1.1s ease-in-out infinite;
+  }
+  @keyframes pulse { 0%, 100% { opacity: .35; } 50% { opacity: 1; } }
+  @media (prefers-reduced-motion: reduce) { .preview-checking .dot { animation: none; opacity: .7; } }
+
+  .stage { display: flex; flex-direction: column; gap: .875rem; will-change: transform, opacity, filter; }
+  .prog { display: flex; flex-direction: column; gap: .5rem; }
+  .prog-text { font-size: .875rem; font-weight: 600; letter-spacing: -.003em; }
+  .track { height: .375rem; border-radius: 62.5rem; background: var(--sunk); overflow: hidden; }
+  .fill { height: 100%; width: 30%; border-radius: 62.5rem; background: var(--accent); animation: indet 1.1s ease-in-out infinite; transform-origin: left center; }
+  @keyframes indet { 0% { transform: translateX(-100%) scaleX(.4); } 50% { transform: translateX(50%) scaleX(.7); } 100% { transform: translateX(220%) scaleX(.4); } }
+  @media (prefers-reduced-motion: reduce) { .fill { animation: none; width: 60%; } }
+
+  .result { display: flex; flex-direction: column; gap: .625rem; }
+  .result a.btn { text-decoration: none; text-align: center; display: block; }
+  .result .n { font-size: .8125rem; color: var(--muted); }
+
+  .err { font-size: .875rem; color: var(--bad); background: var(--bad-wash); border-radius: .625rem; padding: .75rem .875rem; letter-spacing: -.003em; }
+
+  footer { margin-top: 1.75rem; font-size: .75rem; letter-spacing: .003em; color: var(--faint); text-align: center; max-width: 24rem; line-height: 1.55; }
+  footer a { color: var(--faint); }
+
+  .creators { display: flex; gap: .625rem; justify-content: center; flex-wrap: wrap; margin-top: 1.125rem; }
+  .creator-link {
+    display: inline-flex; align-items: center; gap: .5rem;
+    padding: .3125rem .8125rem .3125rem .3125rem; border-radius: 62.5rem;
+    background: var(--sunk); text-decoration: none; color: var(--ink);
+    font-size: .8125rem; font-weight: 600; letter-spacing: -.003em;
+    transition: background 140ms ease, transform 110ms cubic-bezier(.2,.7,.3,1);
+  }
+  .creator-link:hover { background: var(--hair); }
+  .creator-link:active { transform: scale(.96); }
+  .creator-link img { width: 1.75rem; height: 1.75rem; border-radius: 50%; object-fit: cover; display: block; }
+  @media (prefers-reduced-motion: reduce) { .creator-link:active { transform: none; } }
+
+  .visually-hidden { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0,0,0,0); }
+  :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: .25rem; }
+</style>
+</head>
+<body>
+
+  <header>
+    <h1>Downloader</h1>
+    <p>Pega un link de TikTok, Instagram, Facebook, YouTube o X. Verificamos el enlace y te mostramos una vista previa antes de descargar.</p>
+  </header>
+
+  <main class="card">
+    <div class="field">
+      <label for="url" class="visually-hidden">Enlace del video</label>
+      <input id="url" type="text" inputmode="url" autocomplete="off" spellcheck="false"
+             placeholder="https://www.tiktok.com/@usuario/video/...">
+    </div>
+
+    <span id="chip" class="chip">Esperando un enlace</span>
+
+    <div id="previewArea"></div>
+
+    <div class="row">
+      <div class="seg" role="group" aria-label="Formato">
+        <button type="button" id="kind-video" class="active" aria-pressed="true">Video</button>
+        <button type="button" id="kind-audio" aria-pressed="false">Audio (MP3)</button>
+      </div>
+      <select id="resolution" aria-label="Resolución máxima">
+        <option value="1080">1080p</option>
+        <option value="720">720p</option>
+        <option value="480">480p</option>
+        <option value="360">360p</option>
+      </select>
+    </div>
+
+    <button id="go" class="btn" disabled>Descargar</button>
+
+    <div id="stage" class="stage"></div>
+  </main>
+
+  <footer>
+    Los archivos se generan bajo demanda y se borran del servidor pasado un rato.
+    Uso personal — respeta los derechos de quien publicó el contenido.
+    <div class="creators">
+      <a id="botLink" class="creator-link" href="#" target="_blank" rel="noopener">
+        <img src="bot-avatar.jpg" alt="">
+        <span>Abrir en Telegram</span>
+      </a>
+      <a id="ownerLink" class="creator-link" href="#" target="_blank" rel="noopener">
+        <img src="owner-avatar.jpg" alt="">
+        <span>Autor</span>
+      </a>
+    </div>
+  </footer>
+
+<script>
+(function () {
+  "use strict";
+
+  // Ajusta esto a la URL real del servicio de Render una vez desplegado.
+  var API_BASE = "https://telegram-downloader-api.onrender.com";
+  var PREVIEW_DEBOUNCE_MS = 600;
+
+  // Enlaces de contacto del footer — username del bot y del autor en Telegram.
+  var TELEGRAM_BOT_USERNAME = "mi_videito_bot";
+  var TELEGRAM_OWNER_USERNAME = "jonatyum";
+
+  var input = document.getElementById("url");
+  var chip = document.getElementById("chip");
+  var go = document.getElementById("go");
+  var stage = document.getElementById("stage");
+  var previewArea = document.getElementById("previewArea");
+  var resolutionSel = document.getElementById("resolution");
+  var kindVideo = document.getElementById("kind-video");
+  var kindAudio = document.getElementById("kind-audio");
+  var botLink = document.getElementById("botLink");
+  var ownerLink = document.getElementById("ownerLink");
+
+  botLink.href = "https://t.me/" + TELEGRAM_BOT_USERNAME;
+  botLink.querySelector("span").textContent = "@" + TELEGRAM_BOT_USERNAME;
+  ownerLink.href = "https://t.me/" + TELEGRAM_OWNER_USERNAME;
+  ownerLink.querySelector("span").textContent = "@" + TELEGRAM_OWNER_USERNAME;
+
+  var SUPPORTED_DOMAINS = [
+    "tiktok.com", "vm.tiktok.com", "instagram.com", "instagr.am",
+    "facebook.com", "fb.watch", "youtu.be", "youtube.com",
+    "twitter.com", "x.com", "t.co",
+  ];
+
+  function isSupported(text) {
+    var t = (text || "").trim();
+    if (!t) return false;
+    var host;
+    try {
+      var u = new URL(t);
+      if (u.protocol !== "http:" && u.protocol !== "https:") return false;
+      host = u.hostname.toLowerCase().replace(/^www\./, "");
+    } catch (e) { return false; }
+    return SUPPORTED_DOMAINS.some(function (d) { return host === d || host.endsWith("." + d); });
+  }
+
+  function fmtDuration(sec) {
+    sec = Math.round(sec || 0);
+    var m = Math.floor(sec / 60), s = sec % 60;
+    return m + ":" + (s < 10 ? "0" : "") + s;
+  }
+
+  // ---------- Muelle crítico (damping 1.0, response 0.36s) para revelar contenido sin
+  // gesto — la misma curva validada en el canvas de diseño, ahora en la página real. ----------
+  var reduceMotion = window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+  function spring(el, opts) {
+    var to = 1, x = 0, v = 0, raf = 0, last = 0;
+    if (reduceMotion) { paint(1); return; }
+    el.style.opacity = "0";
+    function paint(t) {
+      var c = Math.max(0, Math.min(1, t));
+      el.style.opacity = c;
+      el.style.transform = "scale(" + (0.965 + 0.035 * c).toFixed(4) + ")";
+      el.style.filter = "blur(" + ((1 - c) * 6).toFixed(2) + "px)";
+    }
+    var damping = 1, response = 0.36;
+    var w = (2 * Math.PI) / response, k = w * w, c2 = 2 * damping * w;
+    function frame(now) {
+      if (!last) last = now;
+      var dt = Math.min((now - last) / 1000, 1 / 30);
+      last = now;
+      var steps = Math.max(1, Math.ceil(dt / (1 / 240))), h = dt / steps;
+      for (var i = 0; i < steps; i++) {
+        var a = -k * (x - to) - c2 * v;
+        v += a * h; x += v * h;
+      }
+      paint(x);
+      if (Math.abs(x - to) < 0.001 && Math.abs(v) < 0.001) {
+        paint(1); el.style.filter = ""; el.style.transform = "";
+        return;
+      }
+      raf = requestAnimationFrame(frame);
+    }
+    raf = requestAnimationFrame(frame);
+  }
+
+  var kind = "video";
+  var running = false;
+  var currentSource = null;
+
+  // ---------- Previsualización: verifica el link y muestra foto+título antes de dejar
+  // descargar. Se dispara con debounce al escribir; un contador de secuencia descarta
+  // cualquier respuesta que llegue tarde para una URL que el usuario ya cambió. ----------
+  var previewSeq = 0;
+  var previewTimer = null;
+  var previewReady = false;
+
+  function setKind(k) {
+    kind = k;
+    kindVideo.classList.toggle("active", k === "video");
+    kindVideo.setAttribute("aria-pressed", String(k === "video"));
+    kindAudio.classList.toggle("active", k === "audio");
+    kindAudio.setAttribute("aria-pressed", String(k === "audio"));
+  }
+  kindVideo.addEventListener("click", function () { setKind("video"); });
+  kindAudio.addEventListener("click", function () { setKind("audio"); });
+
+  function pressFeedback(btn) {
+    btn.addEventListener("pointerdown", function () { btn.classList.add("pressed"); });
+    ["pointerup", "pointercancel", "pointerleave"].forEach(function (ev) {
+      btn.addEventListener(ev, function () { btn.classList.remove("pressed"); });
+    });
+  }
+  [go, kindVideo, kindAudio].forEach(pressFeedback);
+
+  function clearPreview() {
+    previewSeq++;
+    previewReady = false;
+    previewArea.innerHTML = "";
+    updateGoState();
+  }
+
+  function showChecking() {
+    previewArea.innerHTML =
+      '<div class="preview-checking"><span class="dot"></span><span>Verificando enlace...</span></div>';
+  }
+
+  function showPreviewError(text) {
+    previewArea.innerHTML = '<div class="err"></div>';
+    previewArea.querySelector(".err").textContent = text;
+  }
+
+  function showPreview(data) {
+    var sub = data.is_playlist
+      ? (data.count || 0) + " elementos"
+      : (data.duration ? fmtDuration(data.duration) : "");
+    var thumbHtml = data.thumbnail
+      ? '<img src="' + data.thumbnail + '" alt="">' +
+        (!data.is_playlist && data.duration ? '<span class="dur">' + fmtDuration(data.duration) + '</span>' : '')
+      : "";
+    previewArea.innerHTML =
+      '<div class="preview" id="previewCard">' +
+        '<div class="preview-thumb">' + thumbHtml + '</div>' +
+        '<div class="preview-text">' +
+          '<span class="preview-title">' + escapeHtml(data.title || "Video") + '</span>' +
+          (sub ? '<span class="preview-sub">' + escapeHtml(String(sub)) + '</span>' : '') +
+        '</div>' +
+      '</div>';
+    spring(document.getElementById("previewCard"));
+  }
+
+  function escapeHtml(s) {
+    var div = document.createElement("div");
+    div.textContent = s;
+    return div.innerHTML;
+  }
+
+  async function runPreview(url) {
+    var seq = ++previewSeq;
+    previewReady = false;
+    updateGoState();
+    showChecking();
+
+    var resp;
+    try {
+      resp = await fetch(API_BASE + "/preview", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ url: url }),
+      });
+    } catch (e) {
+      if (seq !== previewSeq) return;
+      showPreviewError("No pude conectar con el servidor. Intenta de nuevo en un momento.");
+      return;
+    }
+    if (seq !== previewSeq) return; // el usuario ya cambió el link: esta respuesta no aplica
+
+    if (!resp.ok) {
+      var errData = await resp.json().catch(function () { return {}; });
+      showPreviewError(errData.detail || "No pude verificar ese enlace.");
+      return;
+    }
+
+    var data = await resp.json();
+    if (seq !== previewSeq) return;
+    previewReady = true;
+    updateGoState();
+    showPreview(data);
+  }
+
+  function scheduleVerification() {
+    if (previewTimer) clearTimeout(previewTimer);
+    var url = input.value.trim();
+    if (!isSupported(url)) { clearPreview(); return; }
+    previewSeq++; // invalida cualquier verificación anterior en vuelo mientras se espera el debounce
+    previewReady = false;
+    previewArea.innerHTML = "";
+    updateGoState();
+    previewTimer = setTimeout(function () { runPreview(url); }, PREVIEW_DEBOUNCE_MS);
+  }
+
+  function updateGoState() {
+    go.disabled = !previewReady || running;
+  }
+
+  function sync() {
+    var ok = isSupported(input.value);
+    if (!input.value.trim()) {
+      chip.textContent = "Esperando un enlace";
+      chip.className = "chip";
+    } else if (ok) {
+      chip.textContent = "Enlace reconocido";
+      chip.className = "chip match";
+    } else {
+      chip.textContent = "No reconozco ese enlace";
+      chip.className = "chip bad";
+    }
+    scheduleVerification();
+  }
+  input.addEventListener("input", sync);
+
+  function showProgress(text) {
+    stage.innerHTML =
+      '<div class="prog"><span class="prog-text" id="prog-text"></span>' +
+      '<div class="track"><div class="fill"></div></div></div>';
+    document.getElementById("prog-text").textContent = text;
+    spring(stage);
+  }
+
+  function updateProgress(text) {
+    var el = document.getElementById("prog-text");
+    if (el) el.textContent = text;
+  }
+
+  function showError(text) {
+    stage.innerHTML = '<div class="err"></div>';
+    stage.querySelector(".err").textContent = text;
+    spring(stage);
+  }
+
+  function showResult(jobId, files) {
+    var html = "";
+    if (files <= 1) {
+      html = '<a class="btn" href="' + API_BASE + "/jobs/" + jobId + '/file" download>Guardar archivo</a>';
+    } else {
+      html = '<span class="n">' + files + " elementos listos:</span>";
+      for (var i = 0; i < files; i++) {
+        html += '<a class="btn ghost" style="margin-top:.5rem" href="' + API_BASE + "/jobs/" + jobId +
+                '/file?index=' + i + '" download>Elemento ' + (i + 1) + "</a>";
+      }
+    }
+    stage.innerHTML = '<div class="result">' + html + '</div>';
+    spring(stage);
+  }
+
+  function finish() {
+    running = false;
+    if (currentSource) { currentSource.close(); currentSource = null; }
+    updateGoState();
+  }
+
+  async function start() {
+    if (!previewReady) return; // el gate real: sin previsualización exitosa no se descarga
+    running = true;
+    go.disabled = true;
+    showProgress("Enviando...");
+
+    var body = { url: input.value.trim(), kind: kind, resolution: parseInt(resolutionSel.value, 10) };
+
+    var resp;
+    try {
+      resp = await fetch(API_BASE + "/jobs", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+    } catch (e) {
+      showError("No pude conectar con el servidor. Intenta de nuevo en un momento.");
+      finish();
+      return;
+    }
+
+    if (resp.status === 429) {
+      var data = await resp.json().catch(function () { return {}; });
+      showError(data.detail || "Vas muy rápido. Espera un momento antes de intentar de nuevo.");
+      finish();
+      return;
+    }
+    if (!resp.ok) {
+      var errData = await resp.json().catch(function () { return {}; });
+      showError(errData.detail || "No pude procesar ese enlace.");
+      finish();
+      return;
+    }
+
+    var jobId = (await resp.json()).job_id;
+    listen(jobId);
+  }
+
+  function listen(jobId) {
+    var source = new EventSource(API_BASE + "/jobs/" + jobId + "/events");
+    currentSource = source;
+
+    source.onmessage = function (ev) {
+      var data;
+      try { data = JSON.parse(ev.data); } catch (e) { return; }
+
+      if (data.type === "status") {
+        updateProgress(data.text);
+      } else if (data.type === "ready") {
+        fetch(API_BASE + "/jobs/" + jobId)
+          .then(function (r) { return r.json(); })
+          .then(function (info) { showResult(jobId, info.files || 1); })
+          .catch(function () { showResult(jobId, 1); })
+          .finally(finish);
+      } else if (data.type === "error") {
+        showError(data.text || "No pude descargar ese contenido.");
+        finish();
+      }
+    };
+
+    source.onerror = function () {
+      // EventSource reintenta solo; si el job ya no existe (servidor reiniciado, TTL
+      // vencido) lo dejamos morir tras un rato en vez de reintentar para siempre.
+      setTimeout(function () {
+        if (currentSource === source && running) {
+          showError("Se perdió la conexión con el servidor. Intenta de nuevo.");
+          finish();
+        }
+      }, 15000);
+    };
+  }
+
+  go.addEventListener("click", function () { if (!running) start(); });
+  input.addEventListener("keydown", function (e) { if (e.key === "Enter" && !go.disabled) start(); });
+
+  sync();
+})();
+</script>
+</body>
+</html>

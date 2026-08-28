@@ -30,3 +30,31 @@ services:
         value: "50"
     # RENDER_EXTERNAL_URL la inyecta Render automáticamente y el bot la usa como
     # WEBHOOK_URL, así que no hace falta configurarla a mano.
+
+  # Servicio separado para el canal web (frontend estático en GitHub Pages, este
+  # servicio es solo la API). No comparte proceso con el bot: así un pico de tráfico
+  # público en la web no puede tumbar el bot de Telegram, y viceversa. No necesita
+  # BOT_TOKEN ni DATABASE_URL — api.py no importa nada de Telegram ni de la BD.
+  - type: web
+    name: telegram-downloader-api
+    runtime: docker
+    plan: free
+    dockerfilePath: ./Dockerfile.api
+    # A diferencia del bot (que no expone un path de salud propio), api.py sí tiene
+    # /health: Render espera un 200 ahí antes de cortar el tráfico al deploy anterior.
+    healthCheckPath: /health
+    envVars:
+      # URL del frontend en GitHub Pages, para el header CORS. Con varios orígenes
+      # (p. ej. dominio propio + *.github.io), sepáralos por coma.
+      - key: WEB_ORIGINS
+        value: "https://TU-USUARIO.github.io"
+      # --- Mismos límites conservadores que el bot, mismo motivo: 512 MB de RAM ---
+      - key: MAX_CONCURRENT_DOWNLOADS
+        value: "2"
+      - key: MAX_COMPRESS_HEIGHT
+        value: "720"
+      - key: MAX_DOCUMENT_SIZE_MB
+        value: "500"
+      # Cuántos minutos vive un resultado en disco antes de que el barrido lo borre.
+      - key: JOB_TTL_MINUTES
+        value: "30"
