@@ -94,7 +94,15 @@ class TestPreview:
         with patch("api.get_video_info", side_effect=yt_dlp.DownloadError("ERROR: This video is private")):
             r = await client.post("/preview", json={"url": "https://www.tiktok.com/@u/video/1"})
         assert r.status_code == 422
-        assert "🔒" in r.json()["detail"]
+        detail = r.json()["detail"]
+        assert "privado" in detail
+        # La web quiere los mensajes sin emoji (el bot de Telegram sí los conserva).
+        assert not api._EMOJI_RE.search(detail)
+
+    async def test_returns_filesize(self, client):
+        with patch("api.get_video_info", return_value=_default_info(filesize=12345678)):
+            r = await client.post("/preview", json={"url": "https://www.tiktok.com/@u/video/1"})
+        assert r.json()["filesize"] == 12345678
 
     async def test_sniffs_png_thumbnail(self, client):
         png_magic = b"\x89PNG\r\n\x1a\n" + b"restofpng"
@@ -145,6 +153,25 @@ class TestCreateJobValidation:
             await _wait_until(lambda: api._jobs[job_id].status in ("ready", "error"))
         assert r.status_code == 202
 
+    async def test_accepts_full_resolution_ladder(self, client, tmp_path):
+        # La web no limita la calidad: 144p a 2160p (4K) tienen que aceptarse todos.
+        for i, res in enumerate(api._ALLOWED_RESOLUTIONS):
+            fake = tmp_path / "src" / f"{i}.mp4"; fake.parent.mkdir(exist_ok=True); fake.write_bytes(b"d")
+            with patch("api.get_video_info", return_value=_default_info()), \
+                 patch("pipeline.download_video", return_value=str(fake)), \
+                 patch("pipeline.get_video_dimensions", return_value=(0, 0)):
+                r = await client.post("/jobs", json={"url": "https://www.tiktok.com/@u/video/1", "resolution": res})
+                assert r.status_code == 202, f"resolution={res} fue rechazada"
+                job_id = r.json()["job_id"]
+                # Hay que esperar a que el job termine ANTES de salir del `with`: si no,
+                # la tarea de fondo sigue corriendo con los mocks ya revertidos y termina
+                # llamando a yt-dlp de verdad.
+                await _wait_until(lambda: api._jobs[job_id].status in ("ready", "error"))
+
+    async def test_rejects_resolution_outside_ladder(self, client):
+        r = await client.post("/jobs", json={"url": "https://www.tiktok.com/@u/video/1", "resolution": 1000})
+        assert r.status_code == 422
+
 
 # ---------------------------------------------------------------------------
 # Flujo completo: video pequeño listo para descargar
@@ -183,7 +210,8 @@ class TestVideoFlow:
             await _wait_until(lambda: job.status in ("ready", "error"))
 
         assert job.status == "error"
-        assert "🔒" in job.error
+        assert "privado" in job.error
+        assert not api._EMOJI_RE.search(job.error)
 
         f = await client.get(f"/jobs/{job_id}/file")
         assert f.status_code == 404
@@ -361,6 +389,35 @@ class TestHealth:
 # ---------------------------------------------------------------------------
 # Helpers puros
 # ---------------------------------------------------------------------------
+
+class TestEmojiStripping:
+    def test_strips_known_process_emoji(self):
+        assert api._strip_emoji("⏳ En cola...") == "En cola..."
+        assert api._strip_emoji("⬇️ Descargando...") == "Descargando..."
+        assert api._strip_emoji("📤 Enviando video...") == "Enviando video..."
+        assert api._strip_emoji("🗜️ El video es grande, comprimiendo...") == "El video es grande, comprimiendo..."
+        assert api._strip_emoji("📦 No se pudo comprimir, enviando como documento...") == \
+            "No se pudo comprimir, enviando como documento..."
+
+    def test_strips_known_error_emoji(self):
+        assert api._strip_emoji("🔒 No puedo descargar ese video.") == "No puedo descargar ese video."
+        assert api._strip_emoji("🔍 No encontré el video.") == "No encontré el video."
+        assert api._strip_emoji("🛠️ No pude leer ese video ahora mismo.") == "No pude leer ese video ahora mismo."
+        assert api._strip_emoji("⚠️ No pude descargar el video.") == "No pude descargar el video."
+
+    def test_passthrough_without_emoji(self):
+        assert api._strip_emoji("Texto normal sin nada raro.") == "Texto normal sin nada raro."
+
+    def test_none_and_empty_safe(self):
+        assert api._strip_emoji(None) is None
+        assert api._strip_emoji("") == ""
+
+    async def test_web_messenger_update_strips_emoji(self, tmp_path):
+        job = api.Job(id="x")
+        messenger = api.WebMessenger(job, api.DeliveryLimits(max_inline_bytes=1, max_compress_height=None))
+        await messenger.update("⬇️ Descargando...")
+        assert job.phase_text == "Descargando..."
+
 
 class TestJobFilesAndCleanup:
     def test_job_files_single_result(self):

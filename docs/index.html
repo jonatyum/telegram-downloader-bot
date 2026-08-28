@@ -208,7 +208,7 @@
 
   .stage { display: flex; flex-direction: column; gap: .875rem; will-change: transform, opacity, filter; }
   .prog { display: flex; flex-direction: column; gap: .5rem; }
-  .prog-text { font-size: .875rem; font-weight: 600; letter-spacing: -.003em; }
+  .prog-text { font-size: .875rem; font-weight: 600; letter-spacing: -.003em; text-align: center; }
   .track { height: .375rem; border-radius: 62.5rem; background: var(--sunk); overflow: hidden; }
   .fill { height: 100%; width: 30%; border-radius: 62.5rem; background: var(--accent); animation: indet 1.1s ease-in-out infinite; transform-origin: left center; }
   @keyframes indet { 0% { transform: translateX(-100%) scaleX(.4); } 50% { transform: translateX(50%) scaleX(.7); } 100% { transform: translateX(220%) scaleX(.4); } }
@@ -308,10 +308,14 @@
           <button type="button" id="kind-audio" aria-pressed="false">Audio (MP3)</button>
         </div>
         <select id="resolution" aria-label="Resolución máxima">
+          <option value="2160">4K (2160p)</option>
+          <option value="1440">1440p</option>
           <option value="1080">1080p</option>
           <option value="720">720p</option>
           <option value="480">480p</option>
           <option value="360">360p</option>
+          <option value="240">240p</option>
+          <option value="144">144p</option>
         </select>
       </div>
 
@@ -348,7 +352,7 @@
         </span>
         <span class="feature-text">
           <strong>La resolución la elegís vos</strong>
-          <span>Hasta 1080p, no lo que decida la app por vos.</span>
+          <span>Hasta 4K, no lo que decida la app por vos.</span>
         </span>
       </li>
       <li>
@@ -482,6 +486,14 @@
     return m + ":" + (s < 10 ? "0" : "") + s;
   }
 
+  function fmtSize(bytes) {
+    if (!bytes) return "";
+    var mb = bytes / (1024 * 1024);
+    if (mb < 1) return (bytes / 1024).toFixed(0) + " KB";
+    if (mb < 1000) return mb.toFixed(mb < 10 ? 1 : 0) + " MB";
+    return (mb / 1024).toFixed(2) + " GB";
+  }
+
   // ---------- Muelle crítico (damping 1.0, response 0.36s) para revelar contenido sin
   // gesto — la misma curva validada en el canvas de diseño, ahora en la página real. ----------
   var reduceMotion = window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
@@ -564,9 +576,11 @@
   }
 
   function showPreview(data) {
-    var sub = data.is_playlist
-      ? (data.count || 0) + " elementos"
-      : (data.duration ? fmtDuration(data.duration) : "");
+    var parts = [
+      data.is_playlist ? (data.count || 0) + " elementos" : (data.duration ? fmtDuration(data.duration) : ""),
+      fmtSize(data.filesize),
+    ];
+    var sub = parts.filter(function (p) { return p; }).join(" · ");
     var thumbHtml = data.thumbnail
       ? '<img src="' + data.thumbnail + '" alt="">' +
         (!data.is_playlist && data.duration ? '<span class="dur">' + fmtDuration(data.duration) + '</span>' : '')
