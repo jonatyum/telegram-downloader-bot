@@ -53,8 +53,12 @@ services:
         value: "2"
       - key: MAX_COMPRESS_HEIGHT
         value: "720"
+      # 2000 MB (no 500): la web ahora ofrece hasta 4K, y 500 MB rechazaba de entrada
+      # cualquier video largo en esa calidad antes de que llegara al usuario. Si el
+      # disco del plan free de Render no aguanta esto en la práctica, bajalo — es la
+      # única señal real de cuánto espacio hay disponible.
       - key: MAX_DOCUMENT_SIZE_MB
-        value: "500"
+        value: "2000"
       # Cuántos minutos vive un resultado en disco antes de que el barrido lo borre.
       - key: JOB_TTL_MINUTES
         value: "30"

@@ -13,6 +13,7 @@ import base64
 import json
 import logging
 import os
+import re
 import shutil
 import time
 import uuid
@@ -60,6 +61,31 @@ _pipeline = Pipeline(MAX_CONCURRENT_DOWNLOADS, MAX_VIDEO_HEIGHT)
 _RATE_LIMIT_MAX_REQUESTS = int(os.getenv("WEB_RATE_LIMIT_REQUESTS", "8"))
 _limiter = RateLimiter(max_requests=_RATE_LIMIT_MAX_REQUESTS)
 
+# Sin tope de resolución del lado de la API: el techo real lo pone la plataforma
+# origen (yt-dlp cae al máximo disponible si el pedido no existe) o max_inline_bytes.
+_ALLOWED_RESOLUTIONS = (144, 240, 360, 480, 720, 1080, 1440, 2160)
+
+# Los mensajes de pipeline.py (compartido con el bot) traen emoji porque encajan con
+# el tono de Telegram. La web pidió una presentación más limpia: es cosa de este canal,
+# no de pipeline.py — cada Messenger decide cómo presenta lo que el pipeline le manda.
+_EMOJI_RE = re.compile(
+    "["
+    "\U00002300-\U000023FF"  # símbolos técnicos varios (⏳ vive acá)
+    "\U00002600-\U000027BF"  # símbolos varios y dingbats (⚠️ vive acá)
+    "\U00002B00-\U00002BFF"  # símbolos y flechas varias (⬇️ vive acá)
+    "\U0001F300-\U0001FAFF"  # el bloque principal de emoji (🔄📤📦🔒🔍🗜️...)
+    "\U0000FE0F"              # variation selector-16 (fuerza el estilo a color)
+    "\U0000200D"              # zero-width joiner
+    "]+"
+)
+
+
+def _strip_emoji(text: str | None) -> str | None:
+    if not text:
+        return text
+    cleaned = _EMOJI_RE.sub("", text)
+    return re.sub(r"[ \t]+", " ", cleaned).strip()
+
 
 @dataclass
 class Job:
@@ -106,6 +132,7 @@ class WebMessenger:
         return dest
 
     async def update(self, text: str) -> None:
+        text = _strip_emoji(text)
         self._job.phase_text = text
         await self._job.publish({"type": "status", "text": text})
 
@@ -175,7 +202,7 @@ async def _run_job(job: Job, url: str, kind: str, resolution: int | None) -> Non
     except yt_dlp.DownloadError as e:
         logger.warning("DownloadError para %s: %s", url, e)
         job.status = "error"
-        job.error = download_error_message(str(e))
+        job.error = _strip_emoji(download_error_message(str(e)))
         await job.publish({"type": "error", "text": job.error})
     except Exception:
         logger.exception("Error inesperado en job %s (%s)", job.id, url)
@@ -219,8 +246,8 @@ class CreateJobBody(BaseModel):
     @field_validator("resolution")
     @classmethod
     def _valid_resolution(cls, v: int | None) -> int | None:
-        if v is not None and v not in (360, 480, 720, 1080):
-            raise ValueError("resolution debe ser 360, 480, 720 o 1080")
+        if v is not None and v not in _ALLOWED_RESOLUTIONS:
+            raise ValueError("resolution debe ser una de: " + ", ".join(map(str, _ALLOWED_RESOLUTIONS)))
         return v
 
 
@@ -267,10 +294,13 @@ async def preview(body: PreviewBody, request: Request):
 
     loop = asyncio.get_running_loop()
     try:
-        info = await loop.run_in_executor(None, get_video_info, body.url, MAX_VIDEO_HEIGHT)
+        # Estima al techo de calidad (2160p), no a MAX_VIDEO_HEIGHT: la web no limita
+        # la resolución, así que el tamaño mostrado tiene que reflejar lo más grande
+        # que se podría llegar a pedir, no un tope que ya no aplica acá.
+        info = await loop.run_in_executor(None, get_video_info, body.url, max(_ALLOWED_RESOLUTIONS))
     except yt_dlp.DownloadError as e:
         logger.warning("DownloadError en preview para %s: %s", body.url, e)
-        raise HTTPException(422, download_error_message(str(e)))
+        raise HTTPException(422, _strip_emoji(download_error_message(str(e))))
 
     thumbnail = None
     thumb_url = info.get("thumbnail")
@@ -286,6 +316,7 @@ async def preview(body: PreviewBody, request: Request):
     return {
         "title": info.get("title"),
         "duration": info.get("duration"),
+        "filesize": info.get("filesize"),
         "thumbnail": thumbnail,
         "is_playlist": bool(info.get("is_playlist")),
         "count": info.get("count", 1),
