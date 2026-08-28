@@ -171,13 +171,6 @@ def _video_format(h: int) -> str:
 # preferir H.264 aunque sea de menor resolución evita la recodificación.
 _FORMAT_SORT = ["vcodec:avc", "res", "fps", "ext:mp4", "acodec:m4a"]
 
-# El cliente "web" (el que yt-dlp usa por defecto junto con "visionos") cada vez pide más
-# seguido un PO Token, y sin uno YouTube responde "Sign in to confirm you're not a bot" —
-# algo que en una IP de datacenter (Render) pasa mucho más seguido que en una residencial.
-# El cliente "tv" no tiene esa política de PO Token en yt-dlp; anteponerlo no reemplaza
-# los clientes por defecto ("default" los conserva), solo intenta uno más confiable primero.
-_YOUTUBE_PLAYER_CLIENTS = ["tv", "default"]
-
 
 def _is_image_entry(entry: dict) -> bool:
     """
@@ -462,10 +455,7 @@ def download_video(url: str, on_progress: Callable[[str], None] | None = None, m
                 "-avoid_negative_ts", "make_zero",
             ],
         },
-        extractor_args={
-            "tiktok": {"webpage_download": True},
-            "youtube": {"player_client": _YOUTUBE_PLAYER_CLIENTS},
-        },
+        extractor_args={"tiktok": {"webpage_download": True}},
     )
 
     def _do_download() -> str:
@@ -604,7 +594,6 @@ def get_video_info(url: str, max_height: int | None = None) -> dict:
         # Necesario para posts de foto (single o carrusel): sin esto el preflight
         # revienta con "No video formats found!" antes de poder clasificarlos.
         "ignore_no_formats_error": True,
-        "extractor_args": {"youtube": {"player_client": _YOUTUBE_PLAYER_CLIENTS}},
     })
 
     def _extract() -> dict:
@@ -665,7 +654,7 @@ def download_audio(url: str, on_progress: Callable[[str], None] | None = None) -
             "preferredcodec": "mp3",
             "preferredquality": "320",
         }],
-        extractor_args={"youtube": {"skip": ["dash", "hls"], "player_client": _YOUTUBE_PLAYER_CLIENTS}},
+        extractor_args={"youtube": {"skip": ["dash", "hls"]}},
     )
 
     def _do_download() -> tuple[str, dict]:
@@ -698,7 +687,6 @@ def download_song(query: str, on_progress: Callable[[str], None] | None = None) 
             "preferredcodec": "mp3",
             "preferredquality": "320",
         }],
-        extractor_args={"youtube": {"player_client": _YOUTUBE_PLAYER_CLIENTS}},
     )
 
     def _do_download() -> tuple[str, dict]:
@@ -721,7 +709,6 @@ def get_audio_info(url: str) -> dict:
     """Obtiene metadatos del audio sin descargarlo. Retorna filesize (bytes, puede ser None)."""
     opts = _base_opts()
     opts["format"] = "bestaudio/best"
-    opts["extractor_args"] = {"youtube": {"player_client": _YOUTUBE_PLAYER_CLIENTS}}
 
     def _extract() -> dict:
         with yt_dlp.YoutubeDL(opts) as ydl:
