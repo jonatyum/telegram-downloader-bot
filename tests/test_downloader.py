@@ -4,7 +4,7 @@ import pytest
 import yt_dlp
 from unittest.mock import MagicMock, patch, call
 
-from downloader import download_video, download_audio, download_post, _make_output_path, get_video_dimensions, get_video_info, get_audio_info, _estimate_filesize, _run_with_retry, _is_transient_error, fetch_thumbnail, _has_audio_stream, _warn_if_silent
+from downloader import download_video, download_audio, download_post, _make_output_path, get_video_dimensions, get_video_info, get_audio_info, _estimate_filesize, _run_with_retry, _is_transient_error, fetch_thumbnail, _has_audio_stream, _warn_if_silent, _is_image_entry
 from config import DOWNLOAD_DIR, MAX_DOWNLOAD_ATTEMPTS, MAX_VIDEO_HEIGHT
 
 
@@ -468,6 +468,28 @@ class TestFetchThumbnail:
     def test_accepts_exactly_max_bytes(self):
         with patch("downloader.urllib.request.urlopen", return_value=self._mock_response(b"x" * 50)):
             assert fetch_thumbnail("https://cdn/thumb.jpg", max_bytes=50) == b"x" * 50
+
+
+class TestIsImageEntry:
+    def test_instagram_photo_without_formats_is_image(self):
+        entry = {"extractor_key": "Instagram", "thumbnails": [{"url": "https://cdn/p.jpg"}]}
+        assert _is_image_entry(entry) is True
+
+    def test_entry_with_formats_is_not_image(self):
+        entry = {"extractor_key": "Instagram", "formats": [{"url": "https://cdn/v.mp4"}],
+                  "thumbnails": [{"url": "https://cdn/p.jpg"}]}
+        assert _is_image_entry(entry) is False
+
+    def test_youtube_without_formats_is_never_image(self):
+        # YouTube no publica fotos: sin formats es un fallo de extracción (throttling,
+        # bot-detection...), nunca un post de imagen real — bajarlo como foto entregaría
+        # el thumbnail en vez del video.
+        entry = {"extractor_key": "Youtube", "thumbnails": [{"url": "https://i.ytimg.com/x.jpg"}]}
+        assert _is_image_entry(entry) is False
+
+    def test_youtube_extractor_lowercase_field_also_excluded(self):
+        entry = {"extractor": "youtube", "thumbnails": [{"url": "https://i.ytimg.com/x.jpg"}]}
+        assert _is_image_entry(entry) is False
 
 
 class TestHasAudioStream:

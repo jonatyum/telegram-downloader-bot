@@ -176,7 +176,15 @@ def _is_image_entry(entry: dict) -> bool:
     """
     True si el entry es una foto: Instagram (y otras redes) exponen las imágenes solo
     como thumbnails, sin formatos de video/audio descargables.
+
+    YouTube nunca publica fotos: si un link de YouTube llega sin "formats" es un fallo
+    de extracción (throttling, bot-detection, restricción de formato), nunca un post de
+    imagen real. Sin este chequeo, ese fallo se confundía con un post de foto y el video
+    se entregaba como si fuera una imagen (el thumbnail en vez del video real).
     """
+    extractor = (entry.get("extractor_key") or entry.get("extractor") or "").lower()
+    if extractor.startswith("youtube"):
+        return False
     if entry.get("formats") or entry.get("url") or entry.get("requested_downloads"):
         return False
     return bool(entry.get("thumbnails"))
