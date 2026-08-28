@@ -3,8 +3,19 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Downloader</title>
+<title>Videito</title>
 <meta name="description" content="Descarga video o audio de TikTok, Instagram, Facebook, YouTube o X directamente desde el navegador.">
+<link rel="icon" type="image/svg+xml" href="favicon.svg">
+<script>
+  // Aplica el tema guardado ANTES de pintar el CSS, para no mostrar un parpadeo del
+  // tema equivocado si el usuario ya eligió uno distinto al de su sistema operativo.
+  try {
+    var savedTheme = localStorage.getItem("downloader-theme");
+    if (savedTheme === "light" || savedTheme === "dark") {
+      document.documentElement.setAttribute("data-theme", savedTheme);
+    }
+  } catch (e) {}
+</script>
 <style>
   :root {
     --ground:#F5F5F7; --ground-2:#EBEBF0; --surface:#FFFFFF; --sunk:#F0F0F3;
@@ -65,6 +76,17 @@
   header { text-align: center; margin-bottom: 1.75rem; max-width: 26rem; }
   h1 { font-size: clamp(1.625rem, 5vw, 2.125rem); font-weight: 700; letter-spacing: -.026em; margin: 0 0 .5rem; }
   header p { color: var(--muted); font-size: .9375rem; line-height: 1.5; margin: 0; letter-spacing: -.006em; }
+
+  /* En flujo normal (no position:fixed) a propósito: flotar en una esquina fija
+     terminaba superponiéndose al título en viewports angostos. */
+  .topbar { width: 100%; max-width: 26rem; display: flex; justify-content: flex-end; margin-bottom: 1rem; }
+  .theme-picker select {
+    appearance: none; -webkit-appearance: none; cursor: pointer;
+    font-family: var(--sans); font-size: .75rem; font-weight: 600; letter-spacing: .006em; color: var(--ink);
+    background: var(--surface) url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="10" height="6"><path d="M1 1l4 4 4-4" stroke="%236E6E73" stroke-width="1.5" fill="none" stroke-linecap="round"/></svg>') no-repeat right .5625rem center;
+    border: 1px solid var(--hair); box-shadow: var(--shadow);
+    border-radius: 62.5rem; padding: .4375rem 1.5625rem .4375rem .75rem;
+  }
 
   .card {
     width: 100%; max-width: 26rem;
@@ -193,7 +215,17 @@
   }
   .creator-link:hover { background: var(--hair); }
   .creator-link:active { transform: scale(.96); }
-  .creator-link img { width: 1.75rem; height: 1.75rem; border-radius: 50%; object-fit: cover; display: block; }
+  .creator-avatar { position: relative; width: 1.75rem; height: 1.75rem; flex-shrink: 0; }
+  .creator-avatar img { width: 100%; height: 100%; border-radius: 50%; object-fit: cover; display: block; }
+  /* Insignia de Telegram sobre la foto: sin esto, dos círculos con fotos no se
+     distinguen de cualquier otro avatar — hace falta la marca para saber a dónde lleva. */
+  .creator-avatar .badge {
+    position: absolute; right: -.125rem; bottom: -.125rem;
+    width: .8125rem; height: .8125rem; border-radius: 50%;
+    background: #29A9EA; border: 1.5px solid var(--surface);
+    display: flex; align-items: center; justify-content: center;
+  }
+  .creator-avatar .badge svg { width: .5rem; height: .5rem; }
   @media (prefers-reduced-motion: reduce) { .creator-link:active { transform: none; } }
 
   .visually-hidden { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0,0,0,0); }
@@ -201,6 +233,17 @@
 </style>
 </head>
 <body>
+
+  <div class="topbar">
+    <div class="theme-picker">
+      <label for="themeSelect" class="visually-hidden">Tema</label>
+      <select id="themeSelect" aria-label="Tema">
+        <option value="system">Sistema</option>
+        <option value="light">Claro</option>
+        <option value="dark">Oscuro</option>
+      </select>
+    </div>
+  </div>
 
   <header>
     <h1>Downloader</h1>
@@ -238,15 +281,25 @@
 
   <footer>
     Los archivos se generan bajo demanda y se borran del servidor pasado un rato.
-    Uso personal — respeta los derechos de quien publicó el contenido.
+    Uso personal. Respeta los derechos de quien publicó el contenido.
     <div class="creators">
       <a id="botLink" class="creator-link" href="#" target="_blank" rel="noopener">
-        <img src="bot-avatar.jpg" alt="">
-        <span>Abrir en Telegram</span>
+        <span class="creator-avatar">
+          <img src="bot-avatar.jpg" alt="">
+          <span class="badge" aria-hidden="true">
+            <svg viewBox="0 0 20 20" fill="none"><path d="M17 3.5L2.5 9.3c-.9.36-.9 1.6.02 1.9l3.5 1.15 1.35 4.35c.2.62.98.8 1.44.34l2-2 3.9 2.87c.66.48 1.6.12 1.76-.68l2.4-12.1c.18-.9-.72-1.6-1.57-1.24z" fill="#fff"/></svg>
+          </span>
+        </span>
+        <span class="creator-label">Abrir en Telegram</span>
       </a>
       <a id="ownerLink" class="creator-link" href="#" target="_blank" rel="noopener">
-        <img src="owner-avatar.jpg" alt="">
-        <span>Autor</span>
+        <span class="creator-avatar">
+          <img src="owner-avatar.jpg" alt="">
+          <span class="badge" aria-hidden="true">
+            <svg viewBox="0 0 20 20" fill="none"><path d="M17 3.5L2.5 9.3c-.9.36-.9 1.6.02 1.9l3.5 1.15 1.35 4.35c.2.62.98.8 1.44.34l2-2 3.9 2.87c.66.48 1.6.12 1.76-.68l2.4-12.1c.18-.9-.72-1.6-1.57-1.24z" fill="#fff"/></svg>
+          </span>
+        </span>
+        <span class="creator-label">Autor</span>
       </a>
     </div>
   </footer>
@@ -272,11 +325,36 @@
   var kindAudio = document.getElementById("kind-audio");
   var botLink = document.getElementById("botLink");
   var ownerLink = document.getElementById("ownerLink");
+  var themeSelect = document.getElementById("themeSelect");
 
   botLink.href = "https://t.me/" + TELEGRAM_BOT_USERNAME;
-  botLink.querySelector("span").textContent = "@" + TELEGRAM_BOT_USERNAME;
+  botLink.querySelector(".creator-label").textContent = "@" + TELEGRAM_BOT_USERNAME;
   ownerLink.href = "https://t.me/" + TELEGRAM_OWNER_USERNAME;
-  ownerLink.querySelector("span").textContent = "@" + TELEGRAM_OWNER_USERNAME;
+  ownerLink.querySelector(".creator-label").textContent = "@" + TELEGRAM_OWNER_USERNAME;
+
+  // ---------- Tema: claro / oscuro / sistema, persistido en localStorage ----------
+  var THEME_KEY = "downloader-theme";
+
+  function applyTheme(pref) {
+    if (pref === "light" || pref === "dark") {
+      document.documentElement.setAttribute("data-theme", pref);
+    } else {
+      document.documentElement.removeAttribute("data-theme");
+    }
+  }
+
+  var storedTheme = "system";
+  try {
+    storedTheme = localStorage.getItem(THEME_KEY) || "system";
+  } catch (e) {}
+  themeSelect.value = storedTheme;
+  applyTheme(storedTheme); // por si el script de <head> no pudo leer localStorage (privado, etc.)
+
+  themeSelect.addEventListener("change", function () {
+    var v = themeSelect.value;
+    applyTheme(v);
+    try { localStorage.setItem(THEME_KEY, v); } catch (e) {}
+  });
 
   var SUPPORTED_DOMAINS = [
     "tiktok.com", "vm.tiktok.com", "instagram.com", "instagr.am",
