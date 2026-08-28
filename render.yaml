@@ -47,7 +47,7 @@ services:
       # URL del frontend en GitHub Pages, para el header CORS. Con varios orígenes
       # (p. ej. dominio propio + *.github.io), sepáralos por coma.
       - key: WEB_ORIGINS
-        value: "https://TU-USUARIO.github.io"
+        value: "https://jonatyum.github.io"
       # --- Mismos límites conservadores que el bot, mismo motivo: 512 MB de RAM ---
       - key: MAX_CONCURRENT_DOWNLOADS
         value: "2"
