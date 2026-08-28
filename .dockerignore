@@ -27,3 +27,7 @@ CLAUDE.md
 
 # Frontend estático: lo sirve GitHub Pages, ningún Dockerfile lo necesita.
 docs/
+
+# Cookies de YouTube: son credenciales de sesión, nunca al repo ni a la imagen.
+cookies.txt
+*cookies*.txt

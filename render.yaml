@@ -35,6 +35,12 @@ services:
   # servicio es solo la API). No comparte proceso con el bot: así un pico de tráfico
   # público en la web no puede tumbar el bot de Telegram, y viceversa. No necesita
   # BOT_TOKEN ni DATABASE_URL — api.py no importa nada de Telegram ni de la BD.
+      # Ruta del Secret File con las cookies de YouTube. El archivo NO se define acá:
+      # subilo en el dashboard (Environment -> Secret Files) con este mismo nombre.
+      # Si no existe, el servicio arranca igual y sigue sin cookies (solo YouTube se ve
+      # afectado; TikTok, Instagram, Facebook y X no necesitan esto).
+      - key: YOUTUBE_COOKIES_FILE
+        value: "/etc/secrets/youtube-cookies.txt"
   - type: web
     name: telegram-downloader-api
     runtime: docker
@@ -62,3 +68,9 @@ services:
       # Cuántos minutos vive un resultado en disco antes de que el barrido lo borre.
       - key: JOB_TTL_MINUTES
         value: "30"
+      # Ruta del Secret File con las cookies de YouTube. El archivo NO se define acá:
+      # subilo en el dashboard (Environment -> Secret Files) con este mismo nombre.
+      # Si no existe, el servicio arranca igual y sigue sin cookies (solo YouTube se ve
+      # afectado; TikTok, Instagram, Facebook y X no necesitan esto).
+      - key: YOUTUBE_COOKIES_FILE
+        value: "/etc/secrets/youtube-cookies.txt"

@@ -2,6 +2,7 @@ import json
 import os
 import pytest
 import yt_dlp
+import downloader
 from unittest.mock import MagicMock, patch, call
 
 from downloader import download_video, download_audio, download_post, _make_output_path, get_video_dimensions, get_video_info, get_audio_info, _estimate_filesize, _run_with_retry, _is_transient_error, fetch_thumbnail, _has_audio_stream, _warn_if_silent, _is_image_entry
@@ -468,6 +469,68 @@ class TestFetchThumbnail:
     def test_accepts_exactly_max_bytes(self):
         with patch("downloader.urllib.request.urlopen", return_value=self._mock_response(b"x" * 50)):
             assert fetch_thumbnail("https://cdn/thumb.jpg", max_bytes=50) == b"x" * 50
+
+
+class TestCookiefile:
+    """
+    _cookiefile() copia el cookies.txt a un sitio escribible: yt-dlp reescribe el
+    cookiefile al cerrar y en Render el secreto se monta de solo lectura.
+    """
+
+    @staticmethod
+    def _reset():
+        downloader._cookies_prepared = False
+        downloader._cookies_workfile = None
+
+    def test_none_when_not_configured(self):
+        self._reset()
+        with patch("downloader.YOUTUBE_COOKIES_FILE", ""):
+            assert downloader._cookiefile() is None
+
+    def test_none_when_path_missing(self, tmp_path):
+        self._reset()
+        with patch("downloader.YOUTUBE_COOKIES_FILE", str(tmp_path / "no-existe.txt")):
+            assert downloader._cookiefile() is None
+
+    def test_copies_to_writable_location(self, tmp_path):
+        self._reset()
+        src = tmp_path / "secret" / "cookies.txt"
+        src.parent.mkdir()
+        src.write_text("# Netscape HTTP Cookie File\n")
+        work = tmp_path / "downloads"
+        with patch("downloader.YOUTUBE_COOKIES_FILE", str(src)), \
+             patch("downloader.DOWNLOAD_DIR", str(work)):
+            got = downloader._cookiefile()
+        assert got is not None
+        assert got != str(src)  # nunca el original: es de solo lectura en Render
+        assert os.path.exists(got)
+        assert open(got).read() == "# Netscape HTTP Cookie File\n"
+
+    def test_copy_is_made_only_once(self, tmp_path):
+        self._reset()
+        src = tmp_path / "cookies.txt"; src.write_text("a")
+        work = tmp_path / "dl"
+        with patch("downloader.YOUTUBE_COOKIES_FILE", str(src)), \
+             patch("downloader.DOWNLOAD_DIR", str(work)), \
+             patch("downloader.shutil.copyfile") as copyfile:
+            downloader._cookiefile()
+            downloader._cookiefile()
+            downloader._cookiefile()
+        assert copyfile.call_count == 1
+
+    def test_base_opts_omits_cookiefile_without_cookies(self):
+        self._reset()
+        with patch("downloader.YOUTUBE_COOKIES_FILE", ""):
+            assert "cookiefile" not in downloader._base_opts()
+
+    def test_base_opts_includes_cookiefile_when_configured(self, tmp_path):
+        self._reset()
+        src = tmp_path / "cookies.txt"; src.write_text("a")
+        work = tmp_path / "dl"
+        with patch("downloader.YOUTUBE_COOKIES_FILE", str(src)), \
+             patch("downloader.DOWNLOAD_DIR", str(work)):
+            opts = downloader._base_opts()
+        assert opts["cookiefile"] == downloader._cookies_workfile
 
 
 class TestIsImageEntry:

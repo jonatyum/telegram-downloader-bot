@@ -20,6 +20,13 @@ def _env_int(name: str, default: int) -> int:
 # bot.py valida que no esté vacío en su propio main(), donde sí es obligatorio.
 BOT_TOKEN: str = os.getenv("BOT_TOKEN", "")
 
+# Ruta a un cookies.txt (formato Netscape) con una sesión de YouTube. Vacío = sin cookies.
+# YouTube bloquea las IPs de datacenter con "Sign in to confirm you're not a bot"; una
+# sesión autenticada es lo único que lo evita de forma fiable. En Render se monta como
+# Secret File (/etc/secrets/...), que es de SOLO LECTURA — por eso downloader.py trabaja
+# sobre una copia: yt-dlp reescribe el cookiefile al cerrar y fallaría sobre el original.
+YOUTUBE_COOKIES_FILE: str = os.getenv("YOUTUBE_COOKIES_FILE", "")
+
 DOWNLOAD_DIR = os.path.join(os.path.dirname(__file__), "downloads")
 MAX_TELEGRAM_SIZE_BYTES = 50 * 1024 * 1024   # 50 MB — límite del Bot API para enviar como video
 # Tope para enviar como documento. En hosts con poca RAM (Render free 512 MB) hay

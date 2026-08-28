@@ -2,7 +2,9 @@ import json
 import logging
 import math
 import os
+import shutil
 import subprocess
+import threading
 import time
 import urllib.request
 import uuid
@@ -17,6 +19,7 @@ from config import (
     MAX_PREFLIGHT_SIZE_BYTES,
     MAX_DOWNLOAD_ATTEMPTS,
     RETRY_BACKOFF_SECONDS,
+    YOUTUBE_COOKIES_FILE,
 )
 
 logger = logging.getLogger(__name__)
@@ -99,13 +102,60 @@ _UA = (
 )
 
 
+# Copia de trabajo del cookies.txt. yt-dlp reescribe el cookiefile al cerrar
+# (YoutubeDL.close -> cookiejar.save()) para persistir la sesión refrescada, y en Render
+# los Secret Files se montan de SOLO LECTURA: apuntarlo al secreto haría fallar cada
+# descarga. Se copia una vez a un sitio escribible y yt-dlp trabaja sobre la copia.
+_cookies_lock = threading.Lock()
+_cookies_workfile: str | None = None
+_cookies_prepared = False
+
+
+def _cookiefile() -> str | None:
+    """Ruta a la copia escribible del cookies.txt, o None si no hay cookies configuradas."""
+    global _cookies_workfile, _cookies_prepared
+
+    if not YOUTUBE_COOKIES_FILE:
+        return None
+
+    # downloader.py se llama desde varios hilos (run_in_executor): la copia se hace una
+    # sola vez aunque entren varias descargas a la vez.
+    with _cookies_lock:
+        if _cookies_prepared:
+            return _cookies_workfile
+        _cookies_prepared = True
+
+        if not os.path.exists(YOUTUBE_COOKIES_FILE):
+            logger.warning(
+                "YOUTUBE_COOKIES_FILE apunta a una ruta que no existe; se sigue sin cookies.",
+            )
+            return None
+        try:
+            os.makedirs(DOWNLOAD_DIR, exist_ok=True)
+            dest = os.path.join(DOWNLOAD_DIR, ".youtube-cookies.txt")
+            shutil.copyfile(YOUTUBE_COOKIES_FILE, dest)
+            os.chmod(dest, 0o600)
+            _cookies_workfile = dest
+            logger.info("Cookies de YouTube cargadas en una copia de trabajo escribible.")
+        except OSError:
+            # Nunca se loguea el contenido ni la ruta del secreto: son credenciales.
+            logger.exception("No pude preparar la copia de las cookies; se sigue sin ellas.")
+        return _cookies_workfile
+
+
 def _base_opts() -> dict:
     """Opciones comunes a toda llamada a yt-dlp: sin logging propio y el mismo User-Agent en todas partes."""
-    return {
+    opts = {
         "quiet": True,
         "no_warnings": True,
         "http_headers": {"User-Agent": _UA},
     }
+    # Las cookies son por dominio: un cookies.txt de YouTube no se manda a TikTok ni a
+    # Instagram, así que ponerlo acá cubre las cinco funciones sin filtrarlo a otras redes.
+    cookies = _cookiefile()
+    if cookies:
+        opts["cookiefile"] = cookies
+    return opts
 
 
 def _download_opts(
@@ -170,13 +220,6 @@ def _video_format(h: int) -> str:
 # vcodec antes que res por el mismo motivo que _video_format: en las ramas de fallback,
 # preferir H.264 aunque sea de menor resolución evita la recodificación.
 _FORMAT_SORT = ["vcodec:avc", "res", "fps", "ext:mp4", "acodec:m4a"]
-
-# El cliente "web" (el que yt-dlp usa por defecto junto con "visionos") cada vez pide más
-# seguido un PO Token, y sin uno YouTube responde "Sign in to confirm you're not a bot" —
-# algo que en una IP de datacenter (Render) pasa mucho más seguido que en una residencial.
-# El cliente "tv" no tiene esa política de PO Token en yt-dlp; anteponerlo no reemplaza
-# los clientes por defecto ("default" los conserva), solo intenta uno más confiable primero.
-_YOUTUBE_PLAYER_CLIENTS = ["tv", "default"]
 
 
 def _is_image_entry(entry: dict) -> bool:
@@ -462,10 +505,7 @@ def download_video(url: str, on_progress: Callable[[str], None] | None = None, m
                 "-avoid_negative_ts", "make_zero",
             ],
         },
-        extractor_args={
-            "tiktok": {"webpage_download": True},
-            "youtube": {"player_client": _YOUTUBE_PLAYER_CLIENTS},
-        },
+        extractor_args={"tiktok": {"webpage_download": True}},
     )
 
     def _do_download() -> str:
@@ -604,7 +644,6 @@ def get_video_info(url: str, max_height: int | None = None) -> dict:
         # Necesario para posts de foto (single o carrusel): sin esto el preflight
         # revienta con "No video formats found!" antes de poder clasificarlos.
         "ignore_no_formats_error": True,
-        "extractor_args": {"youtube": {"player_client": _YOUTUBE_PLAYER_CLIENTS}},
     })
 
     def _extract() -> dict:
@@ -665,7 +704,7 @@ def download_audio(url: str, on_progress: Callable[[str], None] | None = None) -
             "preferredcodec": "mp3",
             "preferredquality": "320",
         }],
-        extractor_args={"youtube": {"skip": ["dash", "hls"], "player_client": _YOUTUBE_PLAYER_CLIENTS}},
+        extractor_args={"youtube": {"skip": ["dash", "hls"]}},
     )
 
     def _do_download() -> tuple[str, dict]:
@@ -698,7 +737,6 @@ def download_song(query: str, on_progress: Callable[[str], None] | None = None) 
             "preferredcodec": "mp3",
             "preferredquality": "320",
         }],
-        extractor_args={"youtube": {"player_client": _YOUTUBE_PLAYER_CLIENTS}},
     )
 
     def _do_download() -> tuple[str, dict]:
@@ -721,7 +759,6 @@ def get_audio_info(url: str) -> dict:
     """Obtiene metadatos del audio sin descargarlo. Retorna filesize (bytes, puede ser None)."""
     opts = _base_opts()
     opts["format"] = "bestaudio/best"
-    opts["extractor_args"] = {"youtube": {"player_client": _YOUTUBE_PLAYER_CLIENTS}}
 
     def _extract() -> dict:
         with yt_dlp.YoutubeDL(opts) as ydl:
