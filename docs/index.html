@@ -127,6 +127,15 @@
     font-family: var(--sans); font-size: 1rem; color: var(--ink); padding: .625rem 0;
   }
   .field input::placeholder { color: var(--faint); }
+  .paste-btn {
+    flex: none; display: flex; align-items: center; justify-content: center;
+    width: 2.125rem; height: 2.125rem; border: 0; border-radius: .625rem;
+    background: transparent; color: var(--faint); cursor: pointer;
+    transition: background 140ms ease, color 140ms ease;
+  }
+  .paste-btn:hover { background: var(--surface); color: var(--ink); }
+  .paste-btn:active { background: var(--hair); }
+  .paste-btn svg { width: 1.125rem; height: 1.125rem; }
 
   /* En pantallas angostas el segmentado y el select apenas entran uno junto al otro:
      se apilan en vez de comprimirse hasta quedar ilegibles. */
@@ -296,6 +305,9 @@
         <label for="url" class="visually-hidden">Enlace del video</label>
         <input id="url" type="text" inputmode="url" autocomplete="off" spellcheck="false"
                placeholder="https://www.tiktok.com/@usuario/video/...">
+        <button type="button" id="pasteBtn" class="paste-btn" aria-label="Pegar enlace copiado">
+          <svg viewBox="0 0 20 20" fill="none"><rect x="5" y="4" width="10" height="14" rx="2" stroke="currentColor" stroke-width="1.4"/><path d="M8 4V3a1 1 0 011-1h2a1 1 0 011 1v1" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/><path d="M8 10h4M8 13h4" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>
+        </button>
       </div>
 
       <span id="chip" class="chip">Esperando un enlace</span>
@@ -422,6 +434,7 @@
   var TELEGRAM_OWNER_USERNAME = "jonatyum";
 
   var input = document.getElementById("url");
+  var pasteBtn = document.getElementById("pasteBtn");
   var chip = document.getElementById("chip");
   var go = document.getElementById("go");
   var stage = document.getElementById("stage");
@@ -672,6 +685,19 @@
     scheduleVerification();
   }
   input.addEventListener("input", sync);
+
+  pasteBtn.addEventListener("click", async function () {
+    try {
+      var text = (await navigator.clipboard.readText()).trim();
+      if (!text) return;
+      input.value = text; // sobrepone cualquier texto que hubiera en el campo
+      sync();
+    } catch (e) {
+      // El navegador negó el permiso de portapapeles: que el usuario pegue a mano.
+    } finally {
+      input.focus();
+    }
+  });
 
   function showProgress(text) {
     stage.innerHTML =
