@@ -533,6 +533,118 @@ class TestCookiefile:
         assert opts["cookiefile"] == downloader._cookies_workfile
 
 
+class TestYoutubePlayerClients:
+    """
+    Los clientes de InnerTube van en _base_opts para que el preflight extraiga con los
+    mismos que la descarga real: si difirieran, el preflight aprobaría links que después
+    no se pueden bajar.
+    """
+
+    def test_base_opts_carries_configured_clients(self):
+        TestCookiefile._reset()
+        with patch("downloader.YOUTUBE_COOKIES_FILE", ""), \
+             patch("downloader.YOUTUBE_PLAYER_CLIENTS", ("default", "tv_simply")):
+            opts = downloader._base_opts()
+        assert opts["extractor_args"]["youtube"]["player_client"] == ["default", "tv_simply"]
+
+    def test_base_opts_omits_extractor_args_when_empty(self):
+        TestCookiefile._reset()
+        with patch("downloader.YOUTUBE_COOKIES_FILE", ""), \
+             patch("downloader.YOUTUBE_PLAYER_CLIENTS", ()):
+            assert "extractor_args" not in downloader._base_opts()
+
+    def test_download_opts_merges_instead_of_replacing(self):
+        """La clave del bug: una llamada con su propio extractor_args no puede borrar los clientes."""
+        TestCookiefile._reset()
+        with patch("downloader.YOUTUBE_COOKIES_FILE", ""), \
+             patch("downloader.YOUTUBE_PLAYER_CLIENTS", ("default", "android_vr")):
+            opts = downloader._download_opts(
+                "/tmp/x.%(ext)s", None,
+                extractor_args={"tiktok": {"webpage_download": True}},
+            )
+        assert opts["extractor_args"]["youtube"]["player_client"] == ["default", "android_vr"]
+        assert opts["extractor_args"]["tiktok"] == {"webpage_download": True}
+
+    def test_download_opts_merges_within_the_same_extractor(self):
+        """download_audio pasa youtube:skip; tiene que convivir con youtube:player_client."""
+        TestCookiefile._reset()
+        with patch("downloader.YOUTUBE_COOKIES_FILE", ""), \
+             patch("downloader.YOUTUBE_PLAYER_CLIENTS", ("tv_simply",)):
+            opts = downloader._download_opts(
+                "/tmp/x.%(ext)s", None,
+                extractor_args={"youtube": {"skip": ["dash", "hls"]}},
+            )
+        assert opts["extractor_args"]["youtube"] == {
+            "player_client": ["tv_simply"],
+            "skip": ["dash", "hls"],
+        }
+
+    def test_base_opts_is_not_mutated_by_a_download_opts_call(self):
+        """El merge copia: si mutara el dict de la base, la segunda llamada arrastraría lo de la primera."""
+        TestCookiefile._reset()
+        with patch("downloader.YOUTUBE_COOKIES_FILE", ""), \
+             patch("downloader.YOUTUBE_PLAYER_CLIENTS", ("default",)):
+            downloader._download_opts(
+                "/tmp/x.%(ext)s", None,
+                extractor_args={"youtube": {"skip": ["dash"]}},
+            )
+            segunda = downloader._download_opts("/tmp/y.%(ext)s", None)
+        assert segunda["extractor_args"]["youtube"] == {"player_client": ["default"]}
+
+
+class TestYoutubeProxy:
+    """
+    El proxy es la única salida al bloqueo por reputación de IP que no depende de
+    cookies, pero se paga por GB: solo se aplica a YouTube.
+    """
+
+    def test_not_applied_when_unset(self):
+        TestCookiefile._reset()
+        with patch("downloader.YOUTUBE_COOKIES_FILE", ""), \
+             patch("downloader.YOUTUBE_PROXY", ""):
+            assert "proxy" not in downloader._base_opts(youtube=True)
+
+    def test_applied_to_youtube(self):
+        TestCookiefile._reset()
+        with patch("downloader.YOUTUBE_COOKIES_FILE", ""), \
+             patch("downloader.YOUTUBE_PROXY", "http://user:pass@proxy:8080"):
+            assert downloader._base_opts(youtube=True)["proxy"] == "http://user:pass@proxy:8080"
+
+    def test_not_applied_to_other_platforms(self):
+        """Un TikTok no debe salir por un proxy que se paga por GB: baja directo."""
+        TestCookiefile._reset()
+        with patch("downloader.YOUTUBE_COOKIES_FILE", ""), \
+             patch("downloader.YOUTUBE_PROXY", "http://user:pass@proxy:8080"):
+            assert "proxy" not in downloader._base_opts(youtube=False)
+            assert "proxy" not in downloader._download_opts("/tmp/x.%(ext)s", None)
+
+    def test_wired_through_the_public_functions(self):
+        """Lo que importa no es la opción sino el cableado: cada función decide por su URL."""
+        TestCookiefile._reset()
+        ydl = MagicMock()
+        ydl.extract_info.return_value = {"title": "t", "duration": 1}
+        cm = MagicMock()
+        cm.__enter__ = MagicMock(return_value=ydl)
+        cm.__exit__ = MagicMock(return_value=False)
+
+        with patch("downloader.YOUTUBE_COOKIES_FILE", ""), \
+             patch("downloader.YOUTUBE_PROXY", "http://proxy:8080"), \
+             patch("yt_dlp.YoutubeDL", return_value=cm) as ydl_cls:
+            get_video_info("https://youtu.be/abc")
+            assert ydl_cls.call_args[0][0]["proxy"] == "http://proxy:8080"
+
+            ydl_cls.reset_mock()
+            get_video_info("https://www.tiktok.com/@u/video/1")
+            assert "proxy" not in ydl_cls.call_args[0][0]
+
+    def test_download_opts_forwards_the_flag(self):
+        TestCookiefile._reset()
+        with patch("downloader.YOUTUBE_COOKIES_FILE", ""), \
+             patch("downloader.YOUTUBE_PROXY", "socks5://proxy:1080"):
+            opts = downloader._download_opts("/tmp/x.%(ext)s", None, youtube=True)
+        assert opts["proxy"] == "socks5://proxy:1080"
+
+
 class TestIsImageEntry:
     def test_instagram_photo_without_formats_is_image(self):
         entry = {"extractor_key": "Instagram", "thumbnails": [{"url": "https://cdn/p.jpg"}]}
@@ -717,6 +829,14 @@ class TestRetry:
         assert _is_transient_error(yt_dlp.DownloadError("Video unavailable")) is False
         assert _is_transient_error(yt_dlp.DownloadError("File is larger than max-filesize")) is False
         assert _is_transient_error(yt_dlp.DownloadError("Requested format is not available")) is False
+
+    def test_youtube_bot_check_is_permanent(self):
+        """Reintentar el chequeo antibot no cambia nada: la IP del host sigue siendo la misma."""
+        # YouTube manda el apóstrofo tipográfico, así que se prueban las dos formas.
+        assert _is_transient_error(yt_dlp.DownloadError(
+            "ERROR: [youtube] abc: Sign in to confirm you\u2019re not a bot. Use --cookies")) is False
+        assert _is_transient_error(yt_dlp.DownloadError(
+            "ERROR: [youtube] abc: Sign in to confirm you're not a bot. Use --cookies")) is False
 
     def test_retries_transient_then_succeeds(self):
         calls = []

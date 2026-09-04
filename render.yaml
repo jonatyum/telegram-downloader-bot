@@ -41,6 +41,16 @@ services:
       # afectado; TikTok, Instagram, Facebook y X no necesitan esto).
       - key: YOUTUBE_COOKIES_FILE
         value: "/etc/secrets/youtube-cookies.txt"
+      # Clientes de InnerTube que yt-dlp prueba en YouTube. El chequeo antibot desde
+      # IPs de datacenter no cae igual sobre todos: los de TV y visores VR a veces
+      # siguen contestando. Se puede ajustar acá sin tocar código.
+      - key: YOUTUBE_PLAYER_CLIENTS
+        value: "default,tv_simply,android_vr"
+      # Proxy SOLO para YouTube. Vacío = sin proxy (comportamiento actual). Es lo único
+      # que resuelve el bloqueo por reputación de IP sin cookies, pero se paga por GB:
+      # cargalo en el dashboard cuando tengas uno, no en el repo (lleva credenciales).
+      - key: YOUTUBE_PROXY
+        sync: false
   - type: web
     name: telegram-downloader-api
     runtime: docker
@@ -74,3 +84,13 @@ services:
       # afectado; TikTok, Instagram, Facebook y X no necesitan esto).
       - key: YOUTUBE_COOKIES_FILE
         value: "/etc/secrets/youtube-cookies.txt"
+      # Clientes de InnerTube que yt-dlp prueba en YouTube. El chequeo antibot desde
+      # IPs de datacenter no cae igual sobre todos: los de TV y visores VR a veces
+      # siguen contestando. Se puede ajustar acá sin tocar código.
+      - key: YOUTUBE_PLAYER_CLIENTS
+        value: "default,tv_simply,android_vr"
+      # Proxy SOLO para YouTube. Vacío = sin proxy (comportamiento actual). Es lo único
+      # que resuelve el bloqueo por reputación de IP sin cookies, pero se paga por GB:
+      # cargalo en el dashboard cuando tengas uno, no en el repo (lleva credenciales).
+      - key: YOUTUBE_PROXY
+        sync: false
