@@ -9,6 +9,9 @@ results/
 *.mp4
 *.webm
 *.mkv
+# Excepción: la demo del sitio es un asset de docs/, no un video descargado. Sin esto
+# GitHub Pages publicaría la página con el <video> roto.
+!docs/*.mp4
 .DS_Store
 .idea/
 .pytest_cache/
