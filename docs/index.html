@@ -316,9 +316,19 @@
      lo que hacía falta para que nadie intente escribir dentro de la grabación.
      El bisel es opaco y propio (no un token de tema) porque tiene que contrastar
      contra la banda en claro y en oscuro. */
-  .screen { width: 100%; max-width: 26rem; border-radius: 1rem; overflow: hidden; box-shadow: var(--lift); background: #2C2C2E; }
-  :root[data-theme="dark"] .screen { background: #3A3A3C; }
-  @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) .screen { background: #3A3A3C; } }
+  .screen {
+    width: 100%; max-width: 26rem; border-radius: 1rem; overflow: hidden;
+    background: #2C2C2E;
+    /* El anillo va en el box-shadow y no en un border para que no sume ancho al
+       cuadro. Sobre fondo claro la sombra ya define el borde; sobre fondo oscuro no
+       se ve nada (una sombra negra sobre negro no existe), y sin el anillo la
+       ventana se funde con la banda. Por eso el filo claro se refuerza en oscuro. */
+    box-shadow: var(--lift), 0 0 0 1px rgba(0,0,0,.22);
+  }
+  :root[data-theme="dark"] .screen { background: #3A3A3C; box-shadow: var(--lift), 0 0 0 1px rgba(255,255,255,.16); }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) .screen { background: #3A3A3C; box-shadow: var(--lift), 0 0 0 1px rgba(255,255,255,.16); }
+  }
   .screen-bar { position: relative; display: flex; align-items: center; gap: .375rem; padding: .5rem .625rem; }
   .screen-dot { width: .5rem; height: .5rem; border-radius: 50%; flex-shrink: 0; }
   /* Centrado sobre la barra entera, no sobre el hueco que dejan los puntos: con
@@ -328,7 +338,9 @@
     position: absolute; left: 0; right: 0; text-align: center; pointer-events: none;
     font-size: .6875rem; font-weight: 600; letter-spacing: .01em; color: rgba(255,255,255,.62);
   }
-  .demo video { display: block; width: 100%; height: auto; background: var(--ground); }
+  /* Negro fijo, no var(--ground): la grabación es siempre oscura y en tema claro se
+     vería un destello blanco mientras carga. */
+  .demo video { display: block; width: 100%; height: auto; background: #000; }
   .demo figcaption { font-size: .8125rem; color: var(--muted); text-align: center; letter-spacing: -.003em; max-width: 26rem; }
 
   .howto { width: 100%; display: flex; flex-direction: column; gap: 1rem; }
@@ -473,9 +485,9 @@
           <span class="screen-dot" style="background:#FF5F57"></span>
           <span class="screen-dot" style="background:#FEBC2E"></span>
           <span class="screen-dot" style="background:#28C840"></span>
-          <span class="screen-label">Videito</span>
+          <span class="screen-label">Ejemplo</span>
         </div>
-        <video id="demoVideo" src="demo-light.mp4" poster="demo-light-poster.png"
+        <video id="demoVideo" src="demo-dark.mp4" poster="demo-dark-poster.png"
                autoplay loop muted playsinline preload="metadata" width="848" height="786"
                aria-label="Demostración: se pega un enlace de TikTok, aparece la vista previa del video y se descarga el archivo."></video>
       </div>
@@ -697,35 +709,18 @@
   // ---------- Tema: claro / oscuro / sistema, persistido en localStorage ----------
   var THEME_KEY = "downloader-theme";
 
-  // La demo está grabada de la propia página, así que hay una versión por tema: una
-  // captura clara sobre el fondo negro (o al revés) canta muchísimo.
+  // La demo va siempre con la grabación oscura, en los dos temas. Antes había una por
+  // tema: sobre fondo claro la oscura se lee como captura de producto, pero al revés
+  // (tarjeta blanca sobre negro) encandila y parece un error de la página, no un
+  // ejemplo. Una sola grabación además ahorra el archivo y toda la lógica de swap.
   var demoVideo = document.getElementById("demoVideo");
-  var darkQuery = window.matchMedia ? window.matchMedia("(prefers-color-scheme: dark)") : null;
   var stillQuery = window.matchMedia ? window.matchMedia("(prefers-reduced-motion: reduce)") : null;
 
-  function syncDemoSource() {
-    if (!demoVideo) return;
-
-    // Con "reducir movimiento" no se reproduce sola: queda el poster y controles para
-    // verla a mano. Va antes de la comparación de src, porque también aplica cuando el
-    // tema coincide con el del atributo del HTML y no hay nada que intercambiar.
-    var still = stillQuery && stillQuery.matches;
-    if (still) {
-      demoVideo.removeAttribute("autoplay");
-      demoVideo.setAttribute("controls", "");
-      demoVideo.pause();
-    }
-
-    var attr = document.documentElement.getAttribute("data-theme");
-    var dark = attr === "dark" || (!attr && darkQuery && darkQuery.matches);
-    var name = dark ? "demo-dark" : "demo-light";
-    if (demoVideo.getAttribute("src") === name + ".mp4") return;
-    demoVideo.setAttribute("poster", name + "-poster.png");
-    demoVideo.setAttribute("src", name + ".mp4");
-    demoVideo.load();
-    if (still) { demoVideo.pause(); return; }
-    var playing = demoVideo.play();
-    if (playing && playing.catch) playing.catch(function () {}); // autoplay bloqueado: queda el poster
+  // Con "reducir movimiento" no se reproduce sola: queda el poster y controles para verla a mano.
+  if (demoVideo && stillQuery && stillQuery.matches) {
+    demoVideo.removeAttribute("autoplay");
+    demoVideo.setAttribute("controls", "");
+    demoVideo.pause();
   }
 
   function applyTheme(pref) {
@@ -734,11 +729,6 @@
     } else {
       document.documentElement.removeAttribute("data-theme");
     }
-    syncDemoSource();
-  }
-
-  if (darkQuery && darkQuery.addEventListener) {
-    darkQuery.addEventListener("change", syncDemoSource); // solo cambia algo en modo "sistema"
   }
 
   var storedTheme = "system";
