@@ -283,30 +283,66 @@
   .feature-text strong { font-size: .875rem; font-weight: 600; letter-spacing: -.006em; }
   .feature-text span { font-size: .8125rem; color: var(--muted); line-height: 1.45; letter-spacing: -.003em; }
 
+  /* --- Manual ---------------------------------------------------------------
+     Todo lo que enseña a usar la página vive dentro de esta banda, sobre un fondo
+     distinto (--ground-2) al de la app. La demo es una grabación de la propia
+     tarjeta, así que suelta se confunde con el formulario de arriba: la banda la
+     saca del "área donde se hacen cosas" y la mete en el "área que explica". */
+  .manual {
+    width: 100%; max-width: 26rem; margin-top: 2.5rem;
+    background: var(--ground-2); border: 1px solid var(--hair); border-radius: 1.5rem;
+    padding: 1.5rem 1.125rem;
+    display: flex; flex-direction: column; gap: 2rem;
+  }
+  @media (min-width: 60rem) { .manual { max-width: 62rem; margin-top: 3.5rem; padding: 2.25rem 2rem; } }
+  .manual-eyebrow {
+    align-self: center; font-size: .6875rem; font-weight: 700;
+    text-transform: uppercase; letter-spacing: .07em; color: var(--muted);
+    display: flex; align-items: center; gap: .5rem;
+  }
+  /* Filete a los lados del rótulo: separa la banda sin necesidad de otro borde. */
+  .manual-eyebrow::before, .manual-eyebrow::after {
+    content: ""; width: 1.5rem; height: 1px; background: var(--hair-2);
+  }
+
   /* Demostración en video del flujo completo. Es un <video> mudo en bucle y no un GIF:
      mismo resultado visual, un orden de magnitud menos de peso. El <img> del <picture>
      no aplica acá — se usa un poster para el primer cuadro mientras carga. */
-  .demo { width: 100%; max-width: 26rem; margin: 2.25rem 0 0; display: flex; flex-direction: column; gap: .75rem; align-items: center; }
-  @media (min-width: 60rem) { .demo { margin-top: 3.5rem; } }
+  .demo { width: 100%; margin: 0; display: flex; flex-direction: column; gap: .75rem; align-items: center; }
   .demo h2 { font-size: 1.0625rem; font-weight: 700; letter-spacing: -.015em; margin: 0; text-align: center; }
-  .demo video {
-    display: block; width: 100%; height: auto; border-radius: 1rem;
-    border: 1px solid var(--hair); box-shadow: var(--lift); background: var(--sunk);
-  }
-  .demo figcaption { font-size: .8125rem; color: var(--muted); text-align: center; letter-spacing: -.003em; }
 
-  .howto { width: 100%; max-width: 26rem; margin-top: 2.25rem; display: flex; flex-direction: column; gap: 1rem; }
+  /* Chrome de ventana alrededor del video: los tres puntos y la barra de título son
+     la convención universal de "esto es una captura de pantalla", que es exactamente
+     lo que hacía falta para que nadie intente escribir dentro de la grabación.
+     El bisel es opaco y propio (no un token de tema) porque tiene que contrastar
+     contra la banda en claro y en oscuro. */
+  .screen { width: 100%; max-width: 26rem; border-radius: 1rem; overflow: hidden; box-shadow: var(--lift); background: #2C2C2E; }
+  :root[data-theme="dark"] .screen { background: #3A3A3C; }
+  @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) .screen { background: #3A3A3C; } }
+  .screen-bar { display: flex; align-items: center; gap: .375rem; padding: .5rem .625rem; }
+  .screen-dot { width: .5rem; height: .5rem; border-radius: 50%; flex-shrink: 0; }
+  .screen-label {
+    margin-left: auto; margin-right: auto; padding-left: 1.5rem;
+    font-size: .6875rem; font-weight: 600; letter-spacing: .01em; color: rgba(255,255,255,.62);
+  }
+  .demo video { display: block; width: 100%; height: auto; background: var(--ground); }
+  .demo figcaption { font-size: .8125rem; color: var(--muted); text-align: center; letter-spacing: -.003em; max-width: 26rem; }
+
+  .howto { width: 100%; display: flex; flex-direction: column; gap: 1rem; }
   .howto > h2 { font-size: 1.0625rem; font-weight: 700; letter-spacing: -.015em; margin: 0; text-align: center; }
   .howto > p { font-size: .8125rem; color: var(--muted); text-align: center; margin: -.5rem 0 0; letter-spacing: -.003em; }
   .howto-grid { display: flex; flex-direction: column; gap: 1rem; }
   @media (min-width: 60rem) {
-    .howto { max-width: 62rem; margin-top: 3.5rem; }
     .howto-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 1rem; }
   }
   .howto-card {
     background: var(--surface); border: 1px solid var(--hair); border-radius: 1rem;
     padding: 1rem; box-shadow: var(--shadow);
     display: flex; flex-direction: column; gap: .625rem;
+    /* Sin esto la grilla desborda a lo ancho: un item de grid tiene min-width:auto, o
+       sea que no baja del ancho de su contenido, y las URLs de ejemplo no tienen
+       espacios donde cortar. La página entera terminaba con scroll horizontal. */
+    min-width: 0;
   }
   .howto-head { display: flex; align-items: center; gap: .5rem; }
   .howto-head .feature-icon { width: 1.75rem; height: 1.75rem; border-radius: .5rem; }
@@ -320,7 +356,9 @@
     background: var(--sunk); border-radius: .5rem; padding: .5rem .625rem;
     overflow-x: auto; white-space: nowrap; -webkit-overflow-scrolling: touch;
   }
-  .howto-note { font-size: .75rem; color: var(--faint); line-height: 1.45; margin: 0; }
+  /* Los <code> en línea de las notas (vm.tiktok.com/AbCdEf) tampoco tienen dónde
+     cortar: sin esto empujan el ancho mínimo de la tarjeta. */
+  .howto-note { font-size: .75rem; color: var(--faint); line-height: 1.45; margin: 0; overflow-wrap: anywhere; }
 
   footer { margin-top: 1.75rem; font-size: .75rem; letter-spacing: .003em; color: var(--faint); text-align: center; max-width: 24rem; line-height: 1.55; }
   footer a { color: var(--faint); }
@@ -422,110 +460,122 @@
     </main>
   </div>
 
-  <figure class="demo">
-    <h2>Cómo se usa</h2>
-    <video id="demoVideo" src="demo-light.mp4" poster="demo-light-poster.png"
-           autoplay loop muted playsinline preload="metadata" width="848" height="786"
-           aria-label="Demostración: se pega un enlace de TikTok, aparece la vista previa del video y se descarga el archivo."></video>
-    <figcaption>Pegás el enlace, aparece la vista previa y descargás. Nada más.</figcaption>
-  </figure>
+  <div class="manual">
+    <span class="manual-eyebrow">Manual</span>
 
-  <section class="howto">
-    <h2>Cómo copiar el link en cada app</h2>
-    <p>Siempre es lo mismo: buscá <b>Compartir</b> y después <b>Copiar enlace</b>.</p>
-    <div class="howto-grid">
-
-      <div class="howto-card">
-        <div class="howto-head">
-          <span class="feature-icon" aria-hidden="true">
-            <svg viewBox="0 0 20 20" fill="none"><path d="M11.5 2.5v9.2a2.8 2.8 0 11-2.3-2.75" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/><path d="M11.5 2.5c.4 1.9 1.7 3.1 3.6 3.3" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
-          </span>
-          <h3>TikTok</h3>
+    <figure class="demo">
+      <h2>Cómo se usa</h2>
+      <div class="screen">
+        <div class="screen-bar" aria-hidden="true">
+          <span class="screen-dot" style="background:#FF5F57"></span>
+          <span class="screen-dot" style="background:#FEBC2E"></span>
+          <span class="screen-dot" style="background:#28C840"></span>
+          <span class="screen-label">Grabación de ejemplo</span>
         </div>
-        <ol>
-          <li>Tocá la flecha <b>Compartir</b>, a la derecha del video.</li>
-          <li>Elegí <b>Copiar enlace</b>.</li>
-        </ol>
-        <code class="url-sample">https://www.tiktok.com/@usuario/video/7300000000000000000</code>
-        <p class="howto-note">También sirve el link corto que da la app: <code>vm.tiktok.com/AbCdEf</code>.</p>
+        <video id="demoVideo" src="demo-light.mp4" poster="demo-light-poster.png"
+               autoplay loop muted playsinline preload="metadata" width="848" height="786"
+               aria-label="Demostración: se pega un enlace de TikTok, aparece la vista previa del video y se descarga el archivo."></video>
       </div>
+      <figcaption>Pegás el enlace, aparece la vista previa y descargás. Nada más.</figcaption>
+    </figure>
 
-      <div class="howto-card">
-        <div class="howto-head">
-          <span class="feature-icon" aria-hidden="true">
-            <svg viewBox="0 0 20 20" fill="none"><rect x="3" y="3" width="14" height="14" rx="4.5" stroke="currentColor" stroke-width="1.5"/><circle cx="10" cy="10" r="3.2" stroke="currentColor" stroke-width="1.5"/><circle cx="14.2" cy="5.8" r="1" fill="currentColor"/></svg>
-          </span>
-          <h3>Instagram</h3>
+    <section class="howto">
+      <h2>Cómo copiar el link en cada app</h2>
+      <p>Siempre es lo mismo: buscá <b>Compartir</b> y después <b>Copiar enlace</b>.</p>
+      <div class="howto-grid">
+
+        <div class="howto-card">
+          <div class="howto-head">
+            <span class="feature-icon" aria-hidden="true">
+              <svg viewBox="0 0 20 20" fill="none"><path d="M11.5 2.5v9.2a2.8 2.8 0 11-2.3-2.75" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/><path d="M11.5 2.5c.4 1.9 1.7 3.1 3.6 3.3" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            </span>
+            <h3>TikTok</h3>
+          </div>
+          <ol>
+            <li>Tocá la flecha <b>Compartir</b>, a la derecha del video.</li>
+            <li>Elegí <b>Copiar enlace</b>.</li>
+          </ol>
+          <code class="url-sample">https://www.tiktok.com/@usuario/video/7300000000000000000</code>
+          <p class="howto-note">También sirve el link corto que da la app: <code>vm.tiktok.com/AbCdEf</code>.</p>
         </div>
-        <ol>
-          <li>Abrí el reel o el post y tocá <b>⋯</b> (o el ícono de compartir).</li>
-          <li>Elegí <b>Copiar enlace</b>.</li>
-        </ol>
-        <code class="url-sample">https://www.instagram.com/reel/AbCdEfGhIjK/</code>
-        <p class="howto-note">Solo cuentas públicas. Si el post es un carrusel, se descargan todas las fotos y videos.</p>
-      </div>
 
-      <div class="howto-card">
-        <div class="howto-head">
-          <span class="feature-icon" aria-hidden="true">
-            <svg viewBox="0 0 20 20" fill="none"><circle cx="10" cy="10" r="7.2" stroke="currentColor" stroke-width="1.5"/><path d="M11.8 6.6h-1.1c-.9 0-1.4.5-1.4 1.4V9.4M7.9 9.4h3.6M9.3 9.4v7.6" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
-          </span>
-          <h3>Facebook</h3>
+        <div class="howto-card">
+          <div class="howto-head">
+            <span class="feature-icon" aria-hidden="true">
+              <svg viewBox="0 0 20 20" fill="none"><rect x="3" y="3" width="14" height="14" rx="4.5" stroke="currentColor" stroke-width="1.5"/><circle cx="10" cy="10" r="3.2" stroke="currentColor" stroke-width="1.5"/><circle cx="14.2" cy="5.8" r="1" fill="currentColor"/></svg>
+            </span>
+            <h3>Instagram</h3>
+          </div>
+          <ol>
+            <li>Abrí el reel o el post y tocá <b>⋯</b> (o el ícono de compartir).</li>
+            <li>Elegí <b>Copiar enlace</b>.</li>
+          </ol>
+          <code class="url-sample">https://www.instagram.com/reel/AbCdEfGhIjK/</code>
+          <p class="howto-note">Solo cuentas públicas. Si el post es un carrusel, se descargan todas las fotos y videos.</p>
         </div>
-        <ol>
-          <li>Tocá <b>⋯</b> arriba a la derecha del video, o <b>Compartir</b>.</li>
-          <li>Elegí <b>Copiar enlace</b>.</li>
-        </ol>
-        <code class="url-sample">https://www.facebook.com/watch/?v=1234567890</code>
-        <p class="howto-note">También sirve el link corto <code>fb.watch/AbCdEf</code>. Tiene que ser un video público.</p>
-      </div>
 
-      <div class="howto-card">
-        <div class="howto-head">
-          <span class="feature-icon" aria-hidden="true">
-            <svg viewBox="0 0 20 20" fill="none"><rect x="2" y="5" width="16" height="10" rx="3" stroke="currentColor" stroke-width="1.5"/><path d="M8.8 7.8l3.6 2.2-3.6 2.2V7.8z" fill="currentColor"/></svg>
-          </span>
-          <h3>YouTube</h3>
+        <div class="howto-card">
+          <div class="howto-head">
+            <span class="feature-icon" aria-hidden="true">
+              <svg viewBox="0 0 20 20" fill="none"><circle cx="10" cy="10" r="7.2" stroke="currentColor" stroke-width="1.5"/><path d="M11.8 6.6h-1.1c-.9 0-1.4.5-1.4 1.4V9.4M7.9 9.4h3.6M9.3 9.4v7.6" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            </span>
+            <h3>Facebook</h3>
+          </div>
+          <ol>
+            <li>Tocá <b>⋯</b> arriba a la derecha del video, o <b>Compartir</b>.</li>
+            <li>Elegí <b>Copiar enlace</b>.</li>
+          </ol>
+          <code class="url-sample">https://www.facebook.com/watch/?v=1234567890</code>
+          <p class="howto-note">También sirve el link corto <code>fb.watch/AbCdEf</code>. Tiene que ser un video público.</p>
         </div>
-        <ol>
-          <li>Tocá <b>Compartir</b>, debajo del video.</li>
-          <li>Elegí <b>Copiar vínculo</b>.</li>
-        </ol>
-        <code class="url-sample">https://youtu.be/dQw4w9WgXcQ</code>
-        <p class="howto-note">Sirven los Shorts y también el link que copiás de la barra del navegador.</p>
-      </div>
 
-      <div class="howto-card">
-        <div class="howto-head">
-          <span class="feature-icon" aria-hidden="true">
-            <svg viewBox="0 0 20 20" fill="none"><path d="M4 4l12 12M16 4L4 16" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
-          </span>
-          <h3>X (Twitter)</h3>
+        <div class="howto-card">
+          <div class="howto-head">
+            <span class="feature-icon" aria-hidden="true">
+              <svg viewBox="0 0 20 20" fill="none"><rect x="2" y="5" width="16" height="10" rx="3" stroke="currentColor" stroke-width="1.5"/><path d="M8.8 7.8l3.6 2.2-3.6 2.2V7.8z" fill="currentColor"/></svg>
+            </span>
+            <h3>YouTube</h3>
+          </div>
+          <ol>
+            <li>Tocá <b>Compartir</b>, debajo del video.</li>
+            <li>Elegí <b>Copiar vínculo</b>.</li>
+          </ol>
+          <code class="url-sample">https://youtu.be/dQw4w9WgXcQ</code>
+          <p class="howto-note">Sirven los Shorts y también el link que copiás de la barra del navegador.</p>
         </div>
-        <ol>
-          <li>Tocá el ícono de <b>compartir</b> del post con el video.</li>
-          <li>Elegí <b>Copiar enlace</b>.</li>
-        </ol>
-        <code class="url-sample">https://x.com/usuario/status/1234567890123456789</code>
-        <p class="howto-note">Los links viejos de <code>twitter.com</code> funcionan igual.</p>
-      </div>
 
-      <div class="howto-card">
-        <div class="howto-head">
-          <span class="feature-icon" aria-hidden="true">
-            <svg viewBox="0 0 20 20" fill="none"><rect x="5" y="4" width="10" height="14" rx="2" stroke="currentColor" stroke-width="1.4"/><path d="M8 4V3a1 1 0 011-1h2a1 1 0 011 1v1" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/><path d="M8 10h4M8 13h4" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>
-          </span>
-          <h3>Ya lo copiaste</h3>
+        <div class="howto-card">
+          <div class="howto-head">
+            <span class="feature-icon" aria-hidden="true">
+              <svg viewBox="0 0 20 20" fill="none"><path d="M4 4l12 12M16 4L4 16" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
+            </span>
+            <h3>X (Twitter)</h3>
+          </div>
+          <ol>
+            <li>Tocá el ícono de <b>compartir</b> del post con el video.</li>
+            <li>Elegí <b>Copiar enlace</b>.</li>
+          </ol>
+          <code class="url-sample">https://x.com/usuario/status/1234567890123456789</code>
+          <p class="howto-note">Los links viejos de <code>twitter.com</code> funcionan igual.</p>
         </div>
-        <ol>
-          <li>Volvé acá y tocá el botón <b>pegar</b> del campo de arriba.</li>
-          <li>Se verifica solo: si el link sirve, aparece la vista previa.</li>
-        </ol>
-        <p class="howto-note">Si el navegador no deja pegar con el botón, mantené presionado el campo y elegí “Pegar”.</p>
-      </div>
 
-    </div>
-  </section>
+        <div class="howto-card">
+          <div class="howto-head">
+            <span class="feature-icon" aria-hidden="true">
+              <svg viewBox="0 0 20 20" fill="none"><rect x="5" y="4" width="10" height="14" rx="2" stroke="currentColor" stroke-width="1.4"/><path d="M8 4V3a1 1 0 011-1h2a1 1 0 011 1v1" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/><path d="M8 10h4M8 13h4" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>
+            </span>
+            <h3>Ya lo copiaste</h3>
+          </div>
+          <ol>
+            <li>Volvé acá y tocá el botón <b>pegar</b> del campo de arriba.</li>
+            <li>Se verifica solo: si el link sirve, aparece la vista previa.</li>
+          </ol>
+          <p class="howto-note">Si el navegador no deja pegar con el botón, mantené presionado el campo y elegí “Pegar”.</p>
+        </div>
+
+      </div>
+    </section>
+  </div>
 
   <section class="features">
     <h2>Ventajas frente a las apps</h2>
