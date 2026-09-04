@@ -20,7 +20,10 @@ from config import (
     MAX_DOWNLOAD_ATTEMPTS,
     RETRY_BACKOFF_SECONDS,
     YOUTUBE_COOKIES_FILE,
+    YOUTUBE_PLAYER_CLIENTS,
+    YOUTUBE_PROXY,
 )
+from links import is_youtube_url
 
 logger = logging.getLogger(__name__)
 
@@ -41,6 +44,10 @@ _PERMANENT_ERROR_MARKERS = (
     "exceeds the maximum",
     "age-restricted",
     "sign in to confirm your age",
+    # Chequeo antibot de YouTube contra IPs de datacenter. Sin apóstrofo en el marcador:
+    # el mensaje viene de YouTube y usa el tipográfico ("you’re"), no el ASCII. Reintentar
+    # no lo cambia — la IP sigue siendo la misma — y gastaría la slot del semáforo.
+    "not a bot",
     "members-only",
     "account has been terminated",
     "not available in your country",
@@ -143,8 +150,12 @@ def _cookiefile() -> str | None:
         return _cookies_workfile
 
 
-def _base_opts() -> dict:
-    """Opciones comunes a toda llamada a yt-dlp: sin logging propio y el mismo User-Agent en todas partes."""
+def _base_opts(youtube: bool = False) -> dict:
+    """
+    Opciones comunes a toda llamada a yt-dlp: sin logging propio y el mismo User-Agent
+    en todas partes. `youtube` lo decide cada función que recibe la URL (o download_song,
+    que siempre busca en YouTube), porque el proxy solo se aplica ahí.
+    """
     opts = {
         "quiet": True,
         "no_warnings": True,
@@ -155,12 +166,22 @@ def _base_opts() -> dict:
     cookies = _cookiefile()
     if cookies:
         opts["cookiefile"] = cookies
+    # Los clientes de YouTube van acá y no en las funciones de descarga porque el
+    # preflight tiene que fallar o funcionar exactamente igual que la descarga real:
+    # si el preflight extrajera con un cliente distinto, aprobaría links que después
+    # no se pueden bajar. La clave es por extractor, así que no afecta a las otras redes.
+    if YOUTUBE_PLAYER_CLIENTS:
+        opts["extractor_args"] = {"youtube": {"player_client": list(YOUTUBE_PLAYER_CLIENTS)}}
+    # El proxy lleva usuario y clave: no se loguea nunca, ni siquiera al fallar.
+    if youtube and YOUTUBE_PROXY:
+        opts["proxy"] = YOUTUBE_PROXY
     return opts
 
 
 def _download_opts(
     output_template: str,
     on_progress: Callable[[str], None] | None,
+    youtube: bool = False,
     **extra,
 ) -> dict:
     """
@@ -173,7 +194,7 @@ def _download_opts(
         if on_progress:
             on_progress(d.get("status", ""))
 
-    opts = _base_opts()
+    opts = _base_opts(youtube)
     opts.update({
         "outtmpl": output_template,
         "max_filesize": MAX_DOCUMENT_SIZE_BYTES,
@@ -181,7 +202,17 @@ def _download_opts(
         "fragment_retries": 3,
         "progress_hooks": [_progress_hook],
     })
+    # extractor_args se fusiona por extractor en vez de reemplazarse: la base trae los
+    # clientes de YouTube y cada función añade lo suyo ({"tiktok": ...}, {"youtube":
+    # {"skip": ...}}). Un update() plano borraría los clientes en cuanto una llamada
+    # pasara su propio extractor_args, y solo en esa ruta — un bug difícil de ver.
+    extra_args = extra.pop("extractor_args", None)
     opts.update(extra)
+    if extra_args:
+        merged = {name: dict(args) for name, args in opts.get("extractor_args", {}).items()}
+        for name, args in extra_args.items():
+            merged.setdefault(name, {}).update(args)
+        opts["extractor_args"] = merged
     return opts
 
 
@@ -493,7 +524,7 @@ def download_video(url: str, on_progress: Callable[[str], None] | None = None, m
     h = max_height or MAX_VIDEO_HEIGHT
 
     ydl_opts = _download_opts(
-        output_template, on_progress,
+        output_template, on_progress, youtube=is_youtube_url(url),
         format=_video_format(h),
         format_sort=_FORMAT_SORT,
         merge_output_format="mp4",
@@ -537,7 +568,7 @@ def download_post(
     h = max_height or MAX_VIDEO_HEIGHT
 
     ydl_opts = _download_opts(
-        output_template, on_progress,
+        output_template, on_progress, youtube=is_youtube_url(url),
         # Formato permisivo: los items de video bajan con la misma preferencia por H.264
         # que download_video, y los de imagen caen al único formato disponible (la foto).
         format=_video_format(h),
@@ -635,7 +666,7 @@ def get_video_info(url: str, max_height: int | None = None) -> dict:
     Lanza yt_dlp.DownloadError si el video no existe o es privado.
     """
     h = max_height or MAX_VIDEO_HEIGHT
-    opts = _base_opts()
+    opts = _base_opts(is_youtube_url(url))
     opts.update({
         # Mismo selector que la descarga real: si el preflight estimara el tamaño de un
         # formato distinto al que luego se baja, el chequeo de límite no valdría nada.
@@ -697,7 +728,7 @@ def download_audio(url: str, on_progress: Callable[[str], None] | None = None) -
     output_template = _make_output_path()
 
     ydl_opts = _download_opts(
-        output_template, on_progress,
+        output_template, on_progress, youtube=is_youtube_url(url),
         format="bestaudio/best",
         postprocessors=[{
             "key": "FFmpegExtractAudio",
@@ -729,7 +760,8 @@ def download_song(query: str, on_progress: Callable[[str], None] | None = None) 
     output_template = _make_output_path()
 
     ydl_opts = _download_opts(
-        output_template, on_progress,
+        # ytsearch1 siempre va contra YouTube, aunque acá no haya URL que mirar.
+        output_template, on_progress, youtube=True,
         format="bestaudio/best",
         noplaylist=True,
         postprocessors=[{
@@ -757,7 +789,7 @@ def download_song(query: str, on_progress: Callable[[str], None] | None = None) 
 
 def get_audio_info(url: str) -> dict:
     """Obtiene metadatos del audio sin descargarlo. Retorna filesize (bytes, puede ser None)."""
-    opts = _base_opts()
+    opts = _base_opts(is_youtube_url(url))
     opts["format"] = "bestaudio/best"
 
     def _extract() -> dict:

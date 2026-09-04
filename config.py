@@ -27,6 +27,29 @@ BOT_TOKEN: str = os.getenv("BOT_TOKEN", "")
 # sobre una copia: yt-dlp reescribe el cookiefile al cerrar y fallaría sobre el original.
 YOUTUBE_COOKIES_FILE: str = os.getenv("YOUTUBE_COOKIES_FILE", "")
 
+# Clientes de InnerTube que yt-dlp prueba en YouTube, en orden y separados por coma.
+# El chequeo antibot no se aplica igual a todos: el cliente `web` (parte del "default")
+# es al que primero se lo exigen desde una IP de datacenter, mientras que el de TV y el
+# de visores VR a veces siguen respondiendo desde esa misma IP. yt-dlp prueba todos los
+# de la lista y junta los formatos de los que contesten, así que sumar clientes solo
+# puede ayudar; el costo es una petición más por extracción. Un cliente desconocido se
+# ignora con un warning, no rompe. Poner solo "default" deja el comportamiento de fábrica.
+YOUTUBE_PLAYER_CLIENTS: tuple[str, ...] = tuple(
+    c.strip()
+    for c in os.getenv("YOUTUBE_PLAYER_CLIENTS", "default,tv_simply,android_vr").split(",")
+    if c.strip()
+)
+
+# Proxy usado SOLO para YouTube (extracción y descarga). Vacío = sin proxy.
+# El chequeo antibot de YouTube es por reputación de IP: desde una IP de datacenter
+# (Render corre sobre Google Cloud, que YouTube reconoce como propia) ninguna librería
+# ni cliente lo esquiva de forma fiable, porque el bloqueo ocurre antes de mirar quién
+# pregunta. Sin cookies, lo único que lo resuelve es que la petición salga de otra IP.
+# Formato de yt-dlp: "http://usuario:clave@host:puerto" (también socks5://).
+# No se aplica al resto de plataformas: TikTok, Instagram, Facebook y X funcionan
+# directo desde Render, y pasarlas por un proxy de pago sería tirar tráfico y plata.
+YOUTUBE_PROXY: str = os.getenv("YOUTUBE_PROXY", "")
+
 DOWNLOAD_DIR = os.path.join(os.path.dirname(__file__), "downloads")
 MAX_TELEGRAM_SIZE_BYTES = 50 * 1024 * 1024   # 50 MB — límite del Bot API para enviar como video
 # Tope para enviar como documento. En hosts con poca RAM (Render free 512 MB) hay
