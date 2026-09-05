@@ -174,10 +174,39 @@ _worker_down_until = 0.0
 
 def _worker_enabled(url_is_youtube: bool) -> bool:
     """True si hay worker configurado, el link es de YouTube y no está en cooldown."""
-    if not url_is_youtube or not YOUTUBE_WORKER_URL:
+    if not url_is_youtube:
+        return False
+    if not YOUTUBE_WORKER_URL:
+        logger.info("YouTube sin worker configurado: se resuelve en local.")
         return False
     with _worker_lock:
-        return time.monotonic() >= _worker_down_until
+        restante = _worker_down_until - time.monotonic()
+    if restante > 0:
+        # Sin esta línea, los links que caen dentro de la ventana de cooldown parecen
+        # fallar por su cuenta: en realidad ni se intentó el worker.
+        logger.warning(
+            "Worker en cooldown (%.0fs restantes): este link de YouTube va directo a "
+            "local sin intentarlo.", restante,
+        )
+        return False
+    return True
+
+
+def _worker_fail_desc(err: Exception) -> str:
+    """
+    Por qué falló la llamada al worker, en corto. Solo tipos y códigos de estado:
+    nunca la URL (es el dominio de casa de alguien) ni el token.
+
+    El código importa para el diagnóstico: un 524 es el edge del túnel cortando la
+    espera de cabeceras —el worker sigue trabajando, pero ya nadie escucha— y no
+    tiene nada que ver con que el worker esté caído.
+    """
+    if isinstance(err, urllib.error.HTTPError):
+        return f"HTTP {err.code}"
+    reason = getattr(err, "reason", None)
+    if reason is not None:
+        return f"{type(err).__name__}/{type(reason).__name__}"
+    return type(err).__name__
 
 
 def _worker_unreachable(err: Exception) -> None:
@@ -187,8 +216,10 @@ def _worker_unreachable(err: Exception) -> None:
     # Nunca se loguea la URL ni el token del worker: el token es un secreto y la URL
     # es el dominio de casa de alguien.
     logger.warning(
-        "El worker de YouTube no respondió (%s). Se sigue en local y no se reintenta "
-        "durante %d s.", type(err).__name__, YOUTUBE_WORKER_COOLDOWN,
+        "El worker de YouTube no respondió (%s). Se sigue en LOCAL, donde la IP del "
+        "servidor suele estar bloqueada por YouTube: si el próximo error habla de un "
+        "chequeo antibot, la causa real es esta línea, no YouTube. No se reintenta "
+        "durante %d s.", _worker_fail_desc(err), YOUTUBE_WORKER_COOLDOWN,
     )
 
 
@@ -218,16 +249,40 @@ def _worker_call(path: str, payload: dict):
         },
         method="POST",
     )
+    # El tiempo hasta las cabeceras es EL dato de diagnóstico: /video no manda un byte
+    # hasta terminar de bajar el video entero, así que este número es la duración de la
+    # descarga en la conexión del worker. Comparado con el límite del túnel dice si lo
+    # cortaron esperando (corte del edge) o si expiró nuestro propio timeout.
+    started = time.monotonic()
     try:
-        return urllib.request.urlopen(req, timeout=YOUTUBE_WORKER_TIMEOUT)
+        resp = urllib.request.urlopen(req, timeout=YOUTUBE_WORKER_TIMEOUT)
     except urllib.error.HTTPError as e:
+        elapsed = time.monotonic() - started
         if e.code == 422:  # el worker corrió yt-dlp y yt-dlp falló
             try:
                 detail = json.loads(e.read().decode()).get("detail") or ""
             except Exception:
                 detail = ""
+            # Distinguir esto de una caída es el objetivo de todo el logging: acá el
+            # worker SÍ trabajó y fue YouTube quien le dijo que no, o sea que el
+            # problema está en la conexión del worker, no en el transporte.
+            logger.warning(
+                "Worker %s: yt-dlp falló EN EL WORKER tras %.1fs — %s",
+                path, elapsed, detail or "(sin detalle)",
+            )
             raise _WorkerRejected(detail or "No pude descargar ese contenido.") from e
+        logger.warning("Worker %s: respondió HTTP %d tras %.1fs.", path, e.code, elapsed)
         raise  # 5xx, 401, etc.: el worker está mal, se trata como caída
+    except Exception as e:
+        logger.warning(
+            "Worker %s: sin respuesta tras %.1fs (%s). Timeout propio: %ds.",
+            path, time.monotonic() - started, _worker_fail_desc(e), YOUTUBE_WORKER_TIMEOUT,
+        )
+        raise
+    logger.info(
+        "Worker %s: cabeceras en %.1fs (HTTP %s).", path, time.monotonic() - started, resp.status,
+    )
+    return resp
 
 
 def _worker_info(path: str, payload: dict) -> dict | None:
@@ -256,6 +311,7 @@ def _worker_download(path: str, payload: dict) -> tuple[str, dict] | None:
         return None
 
     dest = None
+    started = time.monotonic()
     try:
         with resp:
             ext = os.path.splitext(resp.headers.get("X-Filename") or "")[1] or ".mp4"
@@ -267,10 +323,21 @@ def _worker_download(path: str, payload: dict) -> tuple[str, dict] | None:
             meta = json.loads(resp.headers.get("X-Meta") or "{}")
     except Exception as e:
         # Cortó a mitad de la transferencia: no dejar el archivo a medias en disco.
+        # Cuántos MB habían llegado separa "nunca empezó" de "murió a mitad de camino",
+        # que apuntan a sitios distintos: lo primero al túnel, lo segundo a la subida.
+        parcial = os.path.getsize(dest) if dest and os.path.exists(dest) else 0
+        logger.warning(
+            "Worker %s: la transferencia se cortó tras %.1fs con %.1f MB recibidos (%s).",
+            path, time.monotonic() - started, parcial / 1024 / 1024, _worker_fail_desc(e),
+        )
         if dest and os.path.exists(dest):
             os.remove(dest)
         _worker_unreachable(e)
         return None
+    logger.info(
+        "Worker %s: archivo completo, %.1f MB en %.1fs de transferencia.",
+        path, os.path.getsize(dest) / 1024 / 1024, time.monotonic() - started,
+    )
     return dest, meta
 
 
