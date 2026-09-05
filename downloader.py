@@ -297,6 +297,9 @@ def _worker_call(path: str, payload: dict):
         headers={
             "Content-Type": "application/json",
             "X-Worker-Token": YOUTUBE_WORKER_TOKEN,
+            # Anuncia que este servidor entiende el flujo de trabajos. Un worker que no
+            # lo conozca ignora la cabecera y responde con el archivo, como siempre.
+            "X-Worker-Protocol": "2",
             # Sin esto urllib manda "Python-urllib/3.x", que las protecciones antibot
             # del túnel (Cloudflare y equivalentes) bloquean con un 403 antes de que la
             # petición llegue siquiera a la máquina del worker. Verificado: la misma

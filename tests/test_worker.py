@@ -115,7 +115,7 @@ class TestDownloads:
             async with _client() as c:
                 resp = await _recoger(c, await c.post(
                     "/video", json={"url": "https://youtu.be/abc", "max_height": 720},
-                    headers={"X-Worker-Token": TOKEN}))
+                    headers={"X-Worker-Token": TOKEN, "X-Worker-Protocol": "2"}))
 
         assert resp.status_code == 200
         assert resp.content == b"contenido-de-video"
@@ -131,7 +131,7 @@ class TestDownloads:
             async with _client() as c:
                 resp = await _recoger(c, await c.post(
                     "/audio", json={"url": "https://youtu.be/abc"},
-                    headers={"X-Worker-Token": TOKEN}))
+                    headers={"X-Worker-Token": TOKEN, "X-Worker-Protocol": "2"}))
 
         assert resp.status_code == 200
         assert json.loads(resp.headers["X-Meta"]) == meta
@@ -146,7 +146,7 @@ class TestDownloads:
             async with _client() as c:
                 resp = await _recoger(c, await c.post(
                     "/audio", json={"url": "https://youtu.be/abc"},
-                    headers={"X-Worker-Token": TOKEN}))
+                    headers={"X-Worker-Token": TOKEN, "X-Worker-Protocol": "2"}))
 
         assert resp.status_code == 200
         assert json.loads(resp.headers["X-Meta"]) == meta
@@ -159,7 +159,7 @@ class TestDownloads:
             async with _client() as c:
                 resp = await _recoger(c, await c.post(
                     "/song", json={"query": "una canción"},
-                    headers={"X-Worker-Token": TOKEN}))
+                    headers={"X-Worker-Token": TOKEN, "X-Worker-Protocol": "2"}))
 
         assert resp.status_code == 200
         assert spy.call_args[0][0] == "una canción"
