@@ -6,6 +6,7 @@ import shutil
 import subprocess
 import threading
 import time
+import urllib.error
 import urllib.request
 import uuid
 from collections.abc import Callable
@@ -22,6 +23,10 @@ from config import (
     YOUTUBE_COOKIES_FILE,
     YOUTUBE_PLAYER_CLIENTS,
     YOUTUBE_PROXY,
+    YOUTUBE_WORKER_COOLDOWN,
+    YOUTUBE_WORKER_TIMEOUT,
+    YOUTUBE_WORKER_TOKEN,
+    YOUTUBE_WORKER_URL,
 )
 from links import is_youtube_url
 
@@ -148,6 +153,125 @@ def _cookiefile() -> str | None:
             # Nunca se loguea el contenido ni la ruta del secreto: son credenciales.
             logger.exception("No pude preparar la copia de las cookies; se sigue sin ellas.")
         return _cookies_workfile
+
+
+# ---------------------------------------------------------------------------
+# Worker remoto de YouTube
+#
+# Un servicio idéntico a este código corriendo en una máquina con IP residencial
+# (worker.py, publicado por un túnel). Se le delegan SOLO los links de YouTube: es la
+# única plataforma que bloquea al host por ser datacenter.
+#
+# La regla de oro es que el worker nunca puede empeorar el servicio. Si no contesta
+# —máquina apagada, túnel caído, timeout— se sigue por el camino local, que es
+# exactamente lo que pasaba antes de que el worker existiera. Y para que estar apagado
+# no cueste un timeout por cada link, el primer fallo abre un cooldown durante el cual
+# ni se intenta.
+# ---------------------------------------------------------------------------
+_worker_lock = threading.Lock()
+_worker_down_until = 0.0
+
+
+def _worker_enabled(url_is_youtube: bool) -> bool:
+    """True si hay worker configurado, el link es de YouTube y no está en cooldown."""
+    if not url_is_youtube or not YOUTUBE_WORKER_URL:
+        return False
+    with _worker_lock:
+        return time.monotonic() >= _worker_down_until
+
+
+def _worker_unreachable(err: Exception) -> None:
+    global _worker_down_until
+    with _worker_lock:
+        _worker_down_until = time.monotonic() + YOUTUBE_WORKER_COOLDOWN
+    # Nunca se loguea la URL ni el token del worker: el token es un secreto y la URL
+    # es el dominio de casa de alguien.
+    logger.warning(
+        "El worker de YouTube no respondió (%s). Se sigue en local y no se reintenta "
+        "durante %d s.", type(err).__name__, YOUTUBE_WORKER_COOLDOWN,
+    )
+
+
+class _WorkerRejected(Exception):
+    """El worker respondió, pero yt-dlp falló allá (video privado, borrado...)."""
+
+    def __init__(self, message: str):
+        super().__init__(message)
+        self.message = message
+
+
+def _worker_call(path: str, payload: dict):
+    """
+    POST al worker. Devuelve la respuesta abierta (el que llama la cierra).
+
+    Levanta _WorkerRejected si el worker contestó con un error de yt-dlp: eso NO es
+    caerse, es una respuesta válida que hay que propagar tal cual — reintentarlo en
+    local daría el mismo fallo con peor mensaje (el chequeo antibot en vez de
+    "video privado").
+    """
+    req = urllib.request.Request(
+        YOUTUBE_WORKER_URL + path,
+        data=json.dumps(payload).encode(),
+        headers={
+            "Content-Type": "application/json",
+            "X-Worker-Token": YOUTUBE_WORKER_TOKEN,
+        },
+        method="POST",
+    )
+    try:
+        return urllib.request.urlopen(req, timeout=YOUTUBE_WORKER_TIMEOUT)
+    except urllib.error.HTTPError as e:
+        if e.code == 422:  # el worker corrió yt-dlp y yt-dlp falló
+            try:
+                detail = json.loads(e.read().decode()).get("detail") or ""
+            except Exception:
+                detail = ""
+            raise _WorkerRejected(detail or "No pude descargar ese contenido.") from e
+        raise  # 5xx, 401, etc.: el worker está mal, se trata como caída
+
+
+def _worker_info(path: str, payload: dict) -> dict | None:
+    """Metadatos vía worker, o None si no contestó (el que llama sigue en local)."""
+    try:
+        with _worker_call(path, payload) as resp:
+            return json.loads(resp.read().decode())
+    except _WorkerRejected as e:
+        raise yt_dlp.DownloadError(e.message) from e
+    except Exception as e:
+        _worker_unreachable(e)
+        return None
+
+
+def _worker_download(path: str, payload: dict) -> tuple[str, dict] | None:
+    """
+    Descarga vía worker: guarda el archivo que devuelve en DOWNLOAD_DIR y lo entrega
+    con los metadatos que vengan en la cabecera. None si el worker no contestó.
+    """
+    try:
+        resp = _worker_call(path, payload)
+    except _WorkerRejected as e:
+        raise yt_dlp.DownloadError(e.message) from e
+    except Exception as e:
+        _worker_unreachable(e)
+        return None
+
+    dest = None
+    try:
+        with resp:
+            ext = os.path.splitext(resp.headers.get("X-Filename") or "")[1] or ".mp4"
+            os.makedirs(DOWNLOAD_DIR, exist_ok=True)
+            dest = os.path.join(DOWNLOAD_DIR, f"{uuid.uuid4()}{ext}")
+            # Por bloques: el archivo puede ser de cientos de MB y el host tiene 512.
+            with open(dest, "wb") as fh:
+                shutil.copyfileobj(resp, fh, 1024 * 256)
+            meta = json.loads(resp.headers.get("X-Meta") or "{}")
+    except Exception as e:
+        # Cortó a mitad de la transferencia: no dejar el archivo a medias en disco.
+        if dest and os.path.exists(dest):
+            os.remove(dest)
+        _worker_unreachable(e)
+        return None
+    return dest, meta
 
 
 def _base_opts(youtube: bool = False) -> dict:
@@ -520,8 +644,18 @@ def download_video(url: str, on_progress: Callable[[str], None] | None = None, m
     Lanza yt_dlp.DownloadError si algo falla.
     on_progress recibe el status string de yt-dlp ("downloading", "finished", etc).
     """
-    output_template = _make_output_path()
     h = max_height or MAX_VIDEO_HEIGHT
+
+    if _worker_enabled(is_youtube_url(url)):
+        if on_progress:
+            on_progress("downloading")
+        got = _worker_download("/video", {"url": url, "max_height": h})
+        if got:
+            # El worker ya corrió _ensure_h264 y _fix_stream_loop de su lado: lo que
+            # llega es el archivo final, no hay que volver a procesarlo.
+            return got[0]
+
+    output_template = _make_output_path()
 
     ydl_opts = _download_opts(
         output_template, on_progress, youtube=is_youtube_url(url),
@@ -666,6 +800,12 @@ def get_video_info(url: str, max_height: int | None = None) -> dict:
     Lanza yt_dlp.DownloadError si el video no existe o es privado.
     """
     h = max_height or MAX_VIDEO_HEIGHT
+
+    if _worker_enabled(is_youtube_url(url)):
+        got = _worker_info("/info", {"url": url, "max_height": h})
+        if got is not None:
+            return got
+
     opts = _base_opts(is_youtube_url(url))
     opts.update({
         # Mismo selector que la descarga real: si el preflight estimara el tamaño de un
@@ -725,6 +865,13 @@ def download_audio(url: str, on_progress: Callable[[str], None] | None = None) -
     Devuelve (ruta_mp3, {"title": str, "artist": str | None}).
     Lanza yt_dlp.DownloadError si algo falla.
     """
+    if _worker_enabled(is_youtube_url(url)):
+        if on_progress:
+            on_progress("downloading")
+        got = _worker_download("/audio", {"url": url})
+        if got:
+            return got
+
     output_template = _make_output_path()
 
     ydl_opts = _download_opts(
@@ -757,6 +904,13 @@ def download_song(query: str, on_progress: Callable[[str], None] | None = None) 
     Devuelve (ruta_mp3, {"title": str, "artist": str | None}).
     Lanza yt_dlp.DownloadError si no encuentra/descarga nada.
     """
+    if _worker_enabled(True):
+        if on_progress:
+            on_progress("downloading")
+        got = _worker_download("/song", {"query": query})
+        if got:
+            return got
+
     output_template = _make_output_path()
 
     ydl_opts = _download_opts(
@@ -789,6 +943,11 @@ def download_song(query: str, on_progress: Callable[[str], None] | None = None) 
 
 def get_audio_info(url: str) -> dict:
     """Obtiene metadatos del audio sin descargarlo. Retorna filesize (bytes, puede ser None)."""
+    if _worker_enabled(is_youtube_url(url)):
+        got = _worker_info("/audio-info", {"url": url})
+        if got is not None:
+            return got
+
     opts = _base_opts(is_youtube_url(url))
     opts["format"] = "bestaudio/best"
 
