@@ -297,6 +297,12 @@ def _worker_call(path: str, payload: dict):
         headers={
             "Content-Type": "application/json",
             "X-Worker-Token": YOUTUBE_WORKER_TOKEN,
+            # Sin esto urllib manda "Python-urllib/3.x", que las protecciones antibot
+            # del túnel (Cloudflare y equivalentes) bloquean con un 403 antes de que la
+            # petición llegue siquiera a la máquina del worker. Verificado: la misma
+            # petición pasa o falla solo por esta cabecera. Se reutiliza el _UA que ya
+            # usa el resto del módulo en vez de inventar otro.
+            "User-Agent": _UA,
         },
         method="POST",
     )
