@@ -91,7 +91,7 @@ def _strip_emoji(text: str | None) -> str | None:
 class Job:
     id: str
     status: str = "queued"  # queued | running | ready | error
-    phase_text: str = "En cola..."
+    phase_text: str = "En cola"
     error: str | None = None
     result_path: str | None = None
     result_items: list[dict] | None = None  # carrusel: varios archivos
@@ -287,10 +287,10 @@ async def preview(body: PreviewBody, request: Request):
     ip = _client_ip(request)
     if not _limiter.is_allowed(ip):
         wait = _limiter.seconds_until_reset(ip)
-        raise HTTPException(429, f"Demasiadas solicitudes. Espera {wait} segundos.")
+        raise HTTPException(429, f"Demasiados pedidos seguidos. Espera {wait} segundos y vuelve a intentar.")
 
     if not is_supported_url(body.url):
-        raise HTTPException(400, "Enlace no soportado. Prueba con TikTok, Instagram, Facebook, YouTube o X/Twitter.")
+        raise HTTPException(400, "Solo TikTok, Instagram, Facebook, YouTube y X.")
 
     loop = asyncio.get_running_loop()
     try:
@@ -328,10 +328,10 @@ async def create_job(body: CreateJobBody, request: Request):
     ip = _client_ip(request)
     if not _limiter.is_allowed(ip):
         wait = _limiter.seconds_until_reset(ip)
-        raise HTTPException(429, f"Demasiadas solicitudes. Espera {wait} segundos.")
+        raise HTTPException(429, f"Demasiados pedidos seguidos. Espera {wait} segundos y vuelve a intentar.")
 
     if not is_supported_url(body.url):
-        raise HTTPException(400, "Enlace no soportado. Prueba con TikTok, Instagram, Facebook, YouTube o X/Twitter.")
+        raise HTTPException(400, "Solo TikTok, Instagram, Facebook, YouTube y X.")
 
     job = Job(id=uuid.uuid4().hex)
     _jobs[job.id] = job
@@ -376,7 +376,7 @@ async def job_file(job_id: str, index: int = 0):
 
     path = files[index]
     if not path or not os.path.exists(path):
-        raise HTTPException(410, "El archivo ya no está disponible (expiró).")
+        raise HTTPException(410, "El archivo ya se borró del servidor.")
 
     filename = job.download_name or os.path.basename(path)
     return FileResponse(path, filename=filename)
