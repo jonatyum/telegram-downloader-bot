@@ -25,6 +25,7 @@ import logging
 import os
 import secrets
 import time
+import uuid
 
 import yt_dlp
 from fastapi import FastAPI, Header, HTTPException
@@ -92,6 +93,65 @@ async def _run(fn, *args):
     return result
 
 
+# ---------------------------------------------------------------------------
+# Trabajos en curso
+#
+# Las descargas NO se sirven en la misma petición que las pide. El motivo es medido,
+# no teórico: descargar el archivo entero antes de responder hace que el tiempo hasta
+# la primera cabecera sea la duración completa de la descarga, y los túneles que
+# publican este worker cancelan la petición mucho antes (Cloudflare corta pasados unos
+# ~100 s). Un video de 732 MB tardó 147 s y el túnel lo canceló a los 124 s: el worker
+# terminó su trabajo y se puso a enviar por un socket que ya nadie escuchaba.
+#
+# Con este esquema ninguna petición dura más que un intercambio corto: se acepta el
+# trabajo y se responde al instante, el servidor pregunta por el estado, y cuando el
+# archivo existe lo recoge — ahí las cabeceras salen de inmediato porque no hay nada
+# que esperar. El límite del túnel es sobre el tiempo hasta la primera cabecera, no
+# sobre lo que dure la transferencia, así que un archivo grande ya pasa sin problema.
+_jobs: dict[str, dict] = {}
+_JOB_TTL_SECONDS = 30 * 60
+
+
+def _sweep_jobs() -> None:
+    """Descarta trabajos que nadie recogió: esta máquina es un intermediario, no un almacén."""
+    ahora = time.monotonic()
+    for jid, job in list(_jobs.items()):
+        if ahora - job["created"] > _JOB_TTL_SECONDS:
+            if job.get("path"):
+                _cleanup(job["path"])
+            _jobs.pop(jid, None)
+            logger.info("Job %s descartado por antigüedad.", jid[:8])
+
+
+async def _start_job(fn, *args) -> dict:
+    """Acepta el trabajo, lo lanza en segundo plano y devuelve su id de inmediato."""
+    _sweep_jobs()
+    jid = uuid.uuid4().hex
+    _jobs[jid] = {"status": "running", "path": None, "meta": None,
+                  "error": None, "created": time.monotonic()}
+    asyncio.create_task(_execute_job(jid, fn, *args))
+    return {"job": jid}
+
+
+async def _execute_job(jid: str, fn, *args) -> None:
+    try:
+        result = await _run(fn, *args)
+    except HTTPException as e:
+        # _run ya convirtió el DownloadError en 422; acá se guarda para que el servidor
+        # lo reciba al preguntar por el estado y lo trate igual que antes.
+        _jobs[jid].update(status="error", error=str(e.detail))
+        return
+    except Exception as e:
+        logger.exception("Job %s falló de forma inesperada.", jid[:8])
+        _jobs[jid].update(status="error", error=f"El worker falló: {e}")
+        return
+    # download_video devuelve una ruta; download_audio y download_song, (ruta, metadatos).
+    path, meta = result if isinstance(result, tuple) else (result, None)
+    _jobs[jid].update(status="ready", path=path, meta=meta)
+    logger.info("Job %s listo: %.1f MB esperando recogida.",
+                jid[:8], os.path.getsize(path) / 1024 / 1024)
+
+
 def _file_response(path: str, meta: dict | None = None) -> FileResponse:
     """
     Devuelve el archivo y lo borra en cuanto termina de enviarse: esta máquina es un
@@ -136,28 +196,44 @@ async def audio_info(body: UrlBody, x_worker_token: str | None = Header(default=
     return await _run(get_audio_info, body.url)
 
 
-@app.post("/video")
+@app.post("/video", status_code=202)
 async def video(body: UrlBody, x_worker_token: str | None = Header(default=None)):
     _authorize(x_worker_token)
-    path = await _run(download_video, body.url, None, body.max_height)
-    logger.info("Video entregado (%.1f MB)", os.path.getsize(path) / 1024 / 1024)
-    return _file_response(path)
+    return await _start_job(download_video, body.url, None, body.max_height)
 
 
-@app.post("/audio")
+@app.post("/audio", status_code=202)
 async def audio(body: UrlBody, x_worker_token: str | None = Header(default=None)):
     _authorize(x_worker_token)
-    path, meta = await _run(download_audio, body.url, None)
-    logger.info("Audio entregado (%.1f MB)", os.path.getsize(path) / 1024 / 1024)
-    return _file_response(path, meta)
+    return await _start_job(download_audio, body.url, None)
 
 
-@app.post("/song")
+@app.post("/song", status_code=202)
 async def song(body: QueryBody, x_worker_token: str | None = Header(default=None)):
     _authorize(x_worker_token)
-    path, meta = await _run(download_song, body.query, None)
-    logger.info("Canción entregada (%.1f MB)", os.path.getsize(path) / 1024 / 1024)
-    return _file_response(path, meta)
+    return await _start_job(download_song, body.query, None)
+
+
+@app.get("/jobs/{job_id}")
+async def job_status(job_id: str, x_worker_token: str | None = Header(default=None)):
+    _authorize(x_worker_token)
+    job = _jobs.get(job_id)
+    if job is None:
+        raise HTTPException(404, "Ese trabajo no existe o ya expiró.")
+    return {"status": job["status"], "error": job["error"]}
+
+
+@app.get("/jobs/{job_id}/file")
+async def job_file(job_id: str, x_worker_token: str | None = Header(default=None)):
+    _authorize(x_worker_token)
+    job = _jobs.get(job_id)
+    if job is None:
+        raise HTTPException(404, "Ese trabajo no existe o ya expiró.")
+    if job["status"] != "ready":
+        estado = job["status"]
+        raise HTTPException(409, f"El trabajo todavía está en estado '{estado}'.")
+    _jobs.pop(job_id, None)  # un archivo se recoge una sola vez
+    return _file_response(job["path"], job["meta"])
 
 
 @app.get("/health")

@@ -1,3 +1,4 @@
+import asyncio
 import json
 import os
 
@@ -19,8 +20,29 @@ def _client() -> httpx.AsyncClient:
 
 @pytest.fixture(autouse=True)
 def _token():
+    # worker._jobs es un singleton de módulo: sin limpiarlo, un trabajo de un test
+    # aparecería en el siguiente.
+    worker._jobs.clear()
     with patch("worker.YOUTUBE_WORKER_TOKEN", TOKEN):
         yield
+    worker._jobs.clear()
+
+
+async def _recoger(c, resp):
+    """
+    Recorre el protocolo de dos pasos: el POST acepta el trabajo y devuelve un id, y el
+    archivo se recoge aparte. Es lo que evita que una petición dure lo que la descarga,
+    que era justo lo que hacía que el túnel la cancelara.
+    """
+    assert resp.status_code == 202, resp.text
+    job = resp.json()["job"]
+    for _ in range(100):
+        estado = await c.get(f"/jobs/{job}", headers={"X-Worker-Token": TOKEN})
+        if estado.json()["status"] != "running":
+            break
+        await asyncio.sleep(0.01)   # deja correr el task de fondo
+    assert estado.json()["status"] == "ready", estado.json()
+    return await c.get(f"/jobs/{job}/file", headers={"X-Worker-Token": TOKEN})
 
 
 class TestAuth:
@@ -91,8 +113,9 @@ class TestDownloads:
 
         with patch("worker.download_video", return_value=str(f)):
             async with _client() as c:
-                resp = await c.post("/video", json={"url": "https://youtu.be/abc", "max_height": 720},
-                                    headers={"X-Worker-Token": TOKEN})
+                resp = await _recoger(c, await c.post(
+                    "/video", json={"url": "https://youtu.be/abc", "max_height": 720},
+                    headers={"X-Worker-Token": TOKEN}))
 
         assert resp.status_code == 200
         assert resp.content == b"contenido-de-video"
@@ -106,8 +129,9 @@ class TestDownloads:
 
         with patch("worker.download_audio", return_value=(str(f), meta)):
             async with _client() as c:
-                resp = await c.post("/audio", json={"url": "https://youtu.be/abc"},
-                                    headers={"X-Worker-Token": TOKEN})
+                resp = await _recoger(c, await c.post(
+                    "/audio", json={"url": "https://youtu.be/abc"},
+                    headers={"X-Worker-Token": TOKEN}))
 
         assert resp.status_code == 200
         assert json.loads(resp.headers["X-Meta"]) == meta
@@ -120,8 +144,9 @@ class TestDownloads:
 
         with patch("worker.download_audio", return_value=(str(f), meta)):
             async with _client() as c:
-                resp = await c.post("/audio", json={"url": "https://youtu.be/abc"},
-                                    headers={"X-Worker-Token": TOKEN})
+                resp = await _recoger(c, await c.post(
+                    "/audio", json={"url": "https://youtu.be/abc"},
+                    headers={"X-Worker-Token": TOKEN}))
 
         assert resp.status_code == 200
         assert json.loads(resp.headers["X-Meta"]) == meta
@@ -132,8 +157,9 @@ class TestDownloads:
 
         with patch("worker.download_song", return_value=(str(f), {"title": "t", "artist": None})) as spy:
             async with _client() as c:
-                resp = await c.post("/song", json={"query": "una canción"},
-                                    headers={"X-Worker-Token": TOKEN})
+                resp = await _recoger(c, await c.post(
+                    "/song", json={"query": "una canción"},
+                    headers={"X-Worker-Token": TOKEN}))
 
         assert resp.status_code == 200
         assert spy.call_args[0][0] == "una canción"

@@ -354,6 +354,64 @@ def _worker_info(path: str, payload: dict) -> dict | None:
         return None
 
 
+# Cada cuánto se pregunta por un trabajo del worker. Corto para no añadir latencia
+# perceptible a las descargas rápidas, y suficientemente espaciado para que sondear
+# durante varios minutos no genere tráfico apreciable.
+_WORKER_POLL_SECONDS = 2.0
+
+
+def _worker_get(path: str):
+    """GET autenticado al worker. Mismas cabeceras que el POST, User-Agent incluido."""
+    req = urllib.request.Request(
+        YOUTUBE_WORKER_URL + path,
+        headers={"X-Worker-Token": YOUTUBE_WORKER_TOKEN, "User-Agent": _UA},
+        method="GET",
+    )
+    return urllib.request.urlopen(req, timeout=YOUTUBE_WORKER_TIMEOUT)
+
+
+def _worker_await_job(path: str, job_id: str):
+    """
+    Sondea un trabajo hasta que esté listo y devuelve la respuesta abierta del archivo.
+
+    Ninguna de estas peticiones dura más que un intercambio corto, que es justamente el
+    motivo de todo el esquema: esperar la descarga entera dentro de una sola petición
+    hacía que el túnel la cancelara antes de que el worker pudiera contestar.
+    """
+    started = time.monotonic()
+    while True:
+        try:
+            with _worker_get(f"/jobs/{job_id}") as r:
+                estado = json.loads(r.read().decode())
+        except Exception as e:
+            _worker_unreachable(e)
+            return None
+
+        if estado.get("status") == "ready":
+            logger.info("Worker %s: trabajo listo tras %.1fs, recogiendo el archivo.",
+                        path, time.monotonic() - started)
+            break
+        if estado.get("status") == "error":
+            # Equivale al 422 del esquema anterior: el worker trabajó y yt-dlp falló allá.
+            detalle = estado.get("error") or "No pude descargar ese contenido."
+            logger.warning("Worker %s: yt-dlp falló EN EL WORKER tras %.1fs — %s",
+                           path, time.monotonic() - started, detalle)
+            raise _WorkerRejected(detalle)
+
+        if time.monotonic() - started > YOUTUBE_WORKER_TIMEOUT:
+            logger.warning("Worker %s: el trabajo seguía en curso tras %ds; se abandona.",
+                           path, YOUTUBE_WORKER_TIMEOUT)
+            _worker_unreachable(TimeoutError("el trabajo del worker no terminó a tiempo"))
+            return None
+        time.sleep(_WORKER_POLL_SECONDS)
+
+    try:
+        return _worker_get(f"/jobs/{job_id}/file")
+    except Exception as e:
+        _worker_unreachable(e)
+        return None
+
+
 def _worker_download(path: str, payload: dict) -> tuple[str, dict] | None:
     """
     Descarga vía worker: guarda el archivo que devuelve en DOWNLOAD_DIR y lo entrega
@@ -366,6 +424,29 @@ def _worker_download(path: str, payload: dict) -> tuple[str, dict] | None:
     except Exception as e:
         _worker_unreachable(e)
         return None
+
+    # Worker nuevo: acepta el trabajo y devuelve un id al instante (202). Worker viejo:
+    # el cuerpo de esta misma respuesta YA es el archivo. Se admiten los dos para que
+    # actualizar el servidor antes que el worker (o al revés) no rompa nada.
+    if resp.status == 202:
+        try:
+            with resp:
+                job_id = json.loads(resp.read().decode()).get("job")
+        except Exception as e:
+            _worker_unreachable(e)
+            return None
+        if not job_id:
+            logger.warning("Worker %s: aceptó el trabajo pero no devolvió id.", path)
+            return None
+        try:
+            resp = _worker_await_job(path, job_id)
+        except _WorkerRejected as e:
+            # Mismo contrato que en el esquema anterior: un fallo de yt-dlp en el worker
+            # se propaga como DownloadError en vez de reintentarse en local, donde daría
+            # el chequeo antibot en lugar del motivo real.
+            raise yt_dlp.DownloadError(e.message) from e
+        if resp is None:
+            return None
 
     dest = None
     started = time.monotonic()
