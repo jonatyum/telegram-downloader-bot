@@ -82,8 +82,9 @@ class TestCmdStart:
         update.message.reply_text.assert_called_once()
         text = update.message.reply_text.call_args[0][0]
         assert "👋" in text
+        assert "Videito" in text
         assert "TikTok" in text
-        assert "X/Twitter" in text
+        assert "YouTube" in text
 
 
 # ---------------------------------------------------------------------------
@@ -119,7 +120,7 @@ class TestPreflight:
             await handle_link(update, context)
 
         status_msg.edit_text.assert_called_once()
-        assert "❌" in status_msg.edit_text.call_args[0][0]
+        assert "⚖️" in status_msg.edit_text.call_args[0][0]
         assert "150" in status_msg.edit_text.call_args[0][0]
 
     async def test_youtube_over_limit_shows_mp3_keyboard(self):
@@ -135,7 +136,7 @@ class TestPreflight:
         status_msg.edit_text.assert_called_once()
         call_kwargs = status_msg.edit_text.call_args
         text = call_kwargs[0][0]
-        assert "⚠️" in text
+        assert "⚖️" in text
         assert "150" in text
         assert "reply_markup" in call_kwargs.kwargs
 
@@ -456,7 +457,7 @@ class TestYoutubeFormatKeyboard:
             await handle_link(update, context)
 
         text = status_msg.edit_text.call_args[0][0]
-        assert "🎵" in text
+        assert "canción" in text
 
     async def test_no_keyboard_for_non_youtube(self, tmp_path):
         fake_video = tmp_path / "video.mp4"
@@ -506,7 +507,7 @@ class TestHandleFormatChoice:
         await handle_format_choice(update, context)
 
         update.callback_query.edit_message_text.assert_called_once()
-        assert "expiró" in update.callback_query.edit_message_text.call_args[0][0]
+        assert "venció" in update.callback_query.edit_message_text.call_args[0][0]
 
     async def test_video_choice_sends_video(self, tmp_path):
         fake_video = tmp_path / "video.mp4"
@@ -574,7 +575,7 @@ class TestHandleFormatChoice:
 
         update.callback_query.message.reply_audio.assert_not_called()
         last_text = update.callback_query.message.edit_text.call_args_list[-1][0][0]
-        assert "❌" in last_text
+        assert "⚖️" in last_text
         assert "150" in last_text
 
 

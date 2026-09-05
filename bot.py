@@ -7,7 +7,7 @@ import yt_dlp
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, BotCommand, BotCommandScopeDefault, BotCommandScopeChat, InputMediaPhoto, InputMediaVideo
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, CallbackQueryHandler, ContextTypes, filters
 
-from config import BOT_TOKEN, MAX_TELEGRAM_SIZE_BYTES, MAX_PREFLIGHT_SIZE_BYTES, MAX_CONCURRENT_DOWNLOADS, ADMIN_CHAT_ID, HEALTH_PORT, MAX_VIDEO_HEIGHT, MAX_COMPRESS_HEIGHT, WEBHOOK_URL, WEBHOOK_SECRET, PORT, NOTIFY_ON_START
+from config import BOT_TOKEN, MAX_TELEGRAM_SIZE_BYTES, MAX_PREFLIGHT_SIZE_BYTES, MAX_CONCURRENT_DOWNLOADS, ADMIN_CHAT_ID, HEALTH_PORT, MAX_VIDEO_HEIGHT, MAX_COMPRESS_HEIGHT, WEBHOOK_URL, WEBHOOK_SECRET, PORT, NOTIFY_ON_START, WEB_URL
 from database import init_db, upsert_user, get_all_users, get_stats, get_user_max_resolution, set_user_max_resolution, clear_user_max_resolution
 from downloader import get_video_info, get_audio_info
 from links import extract_urls, is_supported_url, is_youtube_url
@@ -61,7 +61,7 @@ def _song_keyboard(song: dict | None) -> InlineKeyboardMarkup | None:
         return None
     artist, track = song["artist"], song["track"]
     token = _store_song(f"{artist} {track}")
-    label = f"🎵 Descargar: {artist} - {track}"
+    label = f"🎵 Bajar: {artist} - {track}"
     if len(label) > 60:
         label = label[:57] + "…"
     return InlineKeyboardMarkup([[
@@ -156,9 +156,9 @@ def _resolution_keyboard(current: int | None) -> InlineKeyboardMarkup:
 
 
 _PUBLIC_COMMANDS = [
-    BotCommand("start", "Iniciar el bot"),
-    BotCommand("help", "Ver plataformas soportadas"),
-    BotCommand("settings", "⚙️ Configuración"),
+    BotCommand("start", "Qué es y cómo se usa"),
+    BotCommand("help", "Qué puedo descargar"),
+    BotCommand("settings", "Resolución máxima"),
 ]
 
 _ADMIN_COMMANDS = _PUBLIC_COMMANDS + [
@@ -230,20 +230,28 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user = update.effective_user
     upsert_user(user.id, user.username, user.first_name)
     await update.message.reply_text(
-        "👋 ¡Hola! Envíame un link de TikTok, Instagram, Facebook, YouTube o X/Twitter "
-        "y te descargo el video. 🎬"
+        "👋 Soy Videito.\n\n"
+        "Mándame un link de TikTok, Instagram, Facebook, YouTube o X y te devuelvo "
+        "el archivo aquí mismo: el video completo, o solo el audio en MP3. "
+        "Sin marca de agua y sin salir del chat.\n\n"
+        "/help — qué puedo bajar y qué no\n"
+        "/settings — resolución máxima"
     )
 
 
 async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text(
-        "📋 Plataformas soportadas:\n\n"
-        "• 🎵 TikTok\n"
-        "• 📸 Instagram (Reels y posts públicos)\n"
-        "• 👥 Facebook (videos públicos)\n"
-        "• ▶️ YouTube (video o MP3)\n"
-        "• 🐦 X / Twitter (videos públicos)\n\n"
-        "Solo envía el link y listo. ✅"
+        "📋 Qué puedo descargar\n\n"
+        "• TikTok — videos y fotos, sin marca de agua\n"
+        "• Instagram — reels, posts y carruseles públicos\n"
+        "• Facebook — videos públicos\n"
+        "• YouTube — video o MP3, tú eliges\n"
+        "• X / Twitter — videos públicos\n\n"
+        "Mándame el link solo, sin más texto alrededor. Si mandas varios, "
+        "los proceso uno por uno.\n\n"
+        "Telegram no me deja enviar archivos de más de 50 MB. Cuando un video pasa "
+        "de ahí te dejo el enlace a la web, que no tiene ese límite.\n\n"
+        "/settings — resolución máxima"
     )
 
 
@@ -251,7 +259,7 @@ def admin_only(func):
     @wraps(func)
     async def wrapper(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not ADMIN_CHAT_ID or str(update.effective_user.id) != str(ADMIN_CHAT_ID):
-            await update.message.reply_text("⛔ Este comando es solo para administradores.")
+            await update.message.reply_text("⛔ Ese comando es solo para el admin.")
             return
         return await func(update, context)
     return wrapper
@@ -262,7 +270,9 @@ async def cmd_settings(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     current = get_user_max_resolution(user.id)
     display = f"{current}p" if current else f"Por defecto ({MAX_VIDEO_HEIGHT}p)"
     await update.message.reply_text(
-        f"⚙️ *Configuración*\n\nResolución máxima actual: *{display}*\n\nSelecciona la resolución máxima para tus descargas:",
+        f"⚙️ *Resolución máxima*\n\nAhora mismo: *{display}*\n\n"
+        "Bajo la mejor calidad disponible hasta ese tope. Menos resolución = "
+        "archivo más liviano y descarga más rápida.",
         reply_markup=_resolution_keyboard(current),
         parse_mode="Markdown",
     )
@@ -378,8 +388,8 @@ async def handle_link(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     if update.update_id in _duplicate_update_ids:
         _duplicate_update_ids.discard(update.update_id)
         await update.message.reply_text(
-            "🔁 Este link ya fue solicitado en la cola mientras el bot estaba reiniciando. "
-            "Está siendo procesado; si no recibes el resultado, envíalo de nuevo."
+            "🔁 Ese link ya estaba en la cola mientras me reiniciaba. Se está procesando; "
+            "si no te llega nada, mándalo otra vez."
         )
         return
 
@@ -388,7 +398,7 @@ async def handle_link(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
     if not urls:
         await update.message.reply_text(
-            "❌ No reconozco ese link. Prueba con TikTok, Instagram, Facebook, YouTube o X/Twitter."
+            "❌ Ese link no lo reconozco. Sirven TikTok, Instagram, Facebook, YouTube y X."
         )
         return
 
@@ -403,13 +413,13 @@ async def handle_link(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     if not allowed:
         wait = rate_limiter.seconds_until_reset(user.id)
         await update.message.reply_text(
-            f"⏱️ Vas muy rápido. Espera {wait} segundos antes de enviar otro link."
+            f"⏱️ Vas muy rápido. Espera {wait} segundos."
         )
         return
 
     if len(allowed) < len(urls):
         await update.message.reply_text(
-            f"⏱️ Proceso {len(allowed)} de {len(urls)} links; el resto supera tu límite por ahora."
+            f"⏱️ Proceso {len(allowed)} de {len(urls)} links; el resto pasa tu límite por ahora."
         )
 
     user_pref = get_user_max_resolution(user.id)
@@ -423,7 +433,7 @@ async def handle_link(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
 async def _process_url(update: Update, url: str, user_pref: int | None, allow_format_choice: bool) -> None:
     user = update.effective_user
-    status_msg = await update.message.reply_text("🔍 Verificando...")
+    status_msg = await update.message.reply_text("🔍 Verificando el enlace")
 
     try:
         loop = asyncio.get_running_loop()
@@ -443,30 +453,41 @@ async def _process_url(update: Update, url: str, user_pref: int | None, allow_fo
         if filesize and filesize > MAX_PREFLIGHT_SIZE_BYTES:
             size_mb = filesize / (1024 * 1024)
             limit_mb = MAX_PREFLIGHT_SIZE_BYTES // (1024 * 1024)
+            # Pasarse del límite era un callejón sin salida: el canal web no tiene ese
+            # tope, así que el aviso ofrece el otro canal en vez de terminar en un error.
+            # Si WEB_URL está vacía (despliegue sin canal web) el aviso queda como antes.
+            web_note = (
+                f"\n\nBájalo desde la web, que no tiene ese límite:\n{WEB_URL}"
+                if WEB_URL else ""
+            )
             if is_youtube and allow_format_choice:
                 _pending[user.id] = {"url": url, "status_msg": status_msg}
                 keyboard = InlineKeyboardMarkup([[
-                    InlineKeyboardButton("🎵 Audio (MP3)", callback_data="fmt:audio"),
+                    InlineKeyboardButton("🎵 Solo audio (MP3)", callback_data="fmt:audio"),
                 ]])
+                # La pregunta va al final, pegada al botón que la contesta; el enlace
+                # a la web queda en medio como la otra salida posible.
                 await status_msg.edit_text(
-                    f"⚠️ El video pesa ~{size_mb:.0f} MB y supera el límite de {limit_mb} MB.\n"
-                    "¿Lo descargo como MP3?",
+                    f"⚖️ Ese video pesa ~{size_mb:.0f} MB y mi límite aquí son {limit_mb} MB."
+                    + web_note + "\n\n¿O lo bajo como MP3?",
                     reply_markup=keyboard,
                 )
             else:
                 await status_msg.edit_text(
-                    f"❌ El video pesa ~{size_mb:.0f} MB y supera el límite de {limit_mb} MB."
+                    f"⚖️ Ese video pesa ~{size_mb:.0f} MB y mi límite aquí son {limit_mb} MB."
+                    + web_note
                 )
             return
 
         if is_youtube and allow_format_choice:
             _pending[user.id] = {"url": url, "status_msg": status_msg, "song": info.get("song")}
-            note = "🎵 Parece una canción." if info.get("is_music") else ""
+            note = ("Parece una canción, así que el MP3 te va a llegar con título y artista."
+                    if info.get("is_music") else "")
             keyboard = InlineKeyboardMarkup([[
                 InlineKeyboardButton("🎬 Video (MP4)", callback_data="fmt:video"),
-                InlineKeyboardButton("🎵 Audio (MP3)", callback_data="fmt:audio"),
+                InlineKeyboardButton("🎵 Solo audio (MP3)", callback_data="fmt:audio"),
             ]])
-            text = f"¿Cómo quieres descargarlo?{' ' + note if note else ''}"
+            text = f"¿Cómo lo quieres?{' ' + note if note else ''}"
             await status_msg.edit_text(text, reply_markup=keyboard)
             return
 
@@ -478,7 +499,7 @@ async def _process_url(update: Update, url: str, user_pref: int | None, allow_fo
         await status_msg.edit_text(download_error_message(str(e)))
     except Exception:
         logger.exception("Error inesperado para %s", url)
-        await status_msg.edit_text("💥 Ocurrió un error inesperado. Inténtalo de nuevo.")
+        await status_msg.edit_text("💥 Algo se rompió de mi lado. Prueba de nuevo.")
 
 
 async def handle_format_choice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -489,7 +510,7 @@ async def handle_format_choice(update: Update, context: ContextTypes.DEFAULT_TYP
     pending = _pending.pop(user.id, None)
 
     if not pending:
-        await query.edit_message_text("⌛ Esta selección expiró. Envía el link de nuevo.")
+        await query.edit_message_text("⌛ Esa opción venció. Mándame el link de nuevo.")
         return
 
     url = pending["url"]
@@ -502,7 +523,7 @@ async def handle_format_choice(update: Update, context: ContextTypes.DEFAULT_TYP
 
     try:
         if fmt == "audio":
-            await status_msg.edit_text("🔍 Verificando...")
+            await status_msg.edit_text("🔍 Verificando el enlace")
             if await _audio_over_limit(url, status_msg, asyncio.get_running_loop()):
                 return
         messenger = TelegramMessenger(status_msg, DELIVERY_LIMITS)
@@ -512,7 +533,7 @@ async def handle_format_choice(update: Update, context: ContextTypes.DEFAULT_TYP
         await status_msg.edit_text(download_error_message(str(e)))
     except Exception:
         logger.exception("Error inesperado para %s", url)
-        await status_msg.edit_text("💥 Ocurrió un error inesperado. Inténtalo de nuevo.")
+        await status_msg.edit_text("💥 Algo se rompió de mi lado. Prueba de nuevo.")
 
 
 async def _audio_over_limit(url: str, status_msg, loop) -> bool:
@@ -523,7 +544,7 @@ async def _audio_over_limit(url: str, status_msg, loop) -> bool:
         size_mb = audio_size / (1024 * 1024)
         limit_mb = MAX_PREFLIGHT_SIZE_BYTES // (1024 * 1024)
         await status_msg.edit_text(
-            f"❌ El audio pesa ~{size_mb:.0f} MB y supera el límite de {limit_mb} MB."
+            f"⚖️ Ese audio pesa ~{size_mb:.0f} MB y mi límite aquí son {limit_mb} MB."
         )
         return True
     return False
@@ -536,7 +557,7 @@ async def handle_song_download(update: Update, context: ContextTypes.DEFAULT_TYP
     token = query.data.split(":", 1)[1]
     search = _song_queries.pop(token, None)
     if not search:
-        await query.answer("⌛ Esta opción expiró. Envía el link de nuevo.", show_alert=True)
+        await query.answer("⌛ Esa opción venció. Mándame el link de nuevo.", show_alert=True)
         return
 
     # Quita el botón para evitar doble toque.
@@ -545,16 +566,16 @@ async def handle_song_download(update: Update, context: ContextTypes.DEFAULT_TYP
     except Exception:
         pass
 
-    status_msg = await query.message.reply_text(f"🔎 Buscando: {search}...")
+    status_msg = await query.message.reply_text(f"🔎 Buscando: {search}")
     try:
         messenger = TelegramMessenger(status_msg, DELIVERY_LIMITS)
         await pipeline.song(search, messenger=messenger)
     except yt_dlp.DownloadError as e:
         logger.warning("DownloadError (canción) para %s: %s", search, e)
-        await status_msg.edit_text("⚠️ No encontré esa canción. Intenta con otra.")
+        await status_msg.edit_text("🔎 No encontré esa canción. Prueba con otra.")
     except Exception:
         logger.exception("Error inesperado descargando canción %s", search)
-        await status_msg.edit_text("💥 Ocurrió un error inesperado. Inténtalo de nuevo.")
+        await status_msg.edit_text("💥 Algo se rompió de mi lado. Prueba de nuevo.")
 
 
 def main() -> None:

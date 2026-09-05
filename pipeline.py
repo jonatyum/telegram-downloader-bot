@@ -60,8 +60,8 @@ class Messenger(Protocol):
 
 
 _PHASE_MESSAGES = {
-    "downloading": "⬇️ Descargando...",
-    "finished":    "🔄 Procesando...",
+    "downloading": "⬇️ Descargando",
+    "finished":    "🔄 Procesando",
 }
 
 
@@ -99,9 +99,9 @@ def _quality_note(user_pref: int | None, height: int) -> str | None:
     if not user_pref or not height:
         return None
     if height < user_pref:
-        return f"📐 Solo disponible en {height}p (tu preferencia: {user_pref}p)"
+        return f"📐 Solo estaba disponible en {height}p (pediste {user_pref}p)"
     if height > user_pref:
-        return f"📐 Descargado en {height}p — no había formatos disponibles en {user_pref}p o menos"
+        return f"📐 Bajado en {height}p: no había nada de {user_pref}p o menos"
     return None
 
 
@@ -109,12 +109,12 @@ def download_error_message(reason: str) -> str:
     """Traduce un DownloadError de yt-dlp a un mensaje que un usuario pueda entender."""
     reason = reason.lower()
     if "private" in reason or "login" in reason:
-        return "🔒 No puedo descargar ese video, parece que es privado o requiere login."
+        return "🔒 Ese post es privado o pide iniciar sesión. Solo puedo con contenido público."
     if "not found" in reason or "404" in reason:
-        return "🔍 No encontré el video. Verifica que el link sea correcto."
+        return "🔍 No encontré nada en ese link. Revisa que esté completo."
     if "unable to extract" in reason or "rehydration" in reason:
-        return "🛠️ No pude leer ese video ahora mismo (la plataforma cambió algo). Intenta de nuevo en un rato."
-    return "⚠️ No pude descargar el video. Puede que sea privado o que el link haya expirado."
+        return "🛠️ La plataforma cambió algo y no puedo leerlo ahora. Prueba de nuevo en un rato."
+    return "⚠️ No pude descargar eso. Puede ser privado, borrado, o el link ya venció."
 
 
 class Pipeline:
@@ -137,7 +137,7 @@ class Pipeline:
         user_pref_height: int | None = None,
         song: dict | None = None,
     ) -> None:
-        await messenger.update("⏳ En cola...")
+        await messenger.update("⏳ En cola")
         filepath = None
         extra_path = None  # archivo comprimido temporal, si se genera
         effective_height = user_pref_height or self._default_height
@@ -152,7 +152,7 @@ class Pipeline:
                     filepath, meta = await loop.run_in_executor(None, download_audio, url, progress_cb)
                     title = meta["title"]
                     artist = meta.get("artist")
-                    await messenger.update("📤 Enviando audio...")
+                    await messenger.update("📤 Preparando el archivo")
                     await messenger.send_audio(
                         filepath, title=title, performer=artist,
                         filename=_audio_filename(title, artist),
@@ -162,7 +162,7 @@ class Pipeline:
 
                     # Post de una sola foto (link de imagen, no video): enviar como foto.
                     if filepath.rsplit(".", 1)[-1].lower() in _IMAGE_EXTS:
-                        await messenger.update("📤 Enviando foto...")
+                        await messenger.update("📤 Preparando el archivo")
                         await messenger.send_photo(filepath)
                         await messenger.finish()
                         return
@@ -176,7 +176,7 @@ class Pipeline:
 
                     if file_size > messenger.limits.max_inline_bytes:
                         # Intenta comprimir para poder enviarlo como video reproducible.
-                        await messenger.update("🗜️ El video es grande, comprimiendo...")
+                        await messenger.update("🗜️ El video es grande, comprimiendo")
                         compressed = await loop.run_in_executor(
                             None, compress_video, filepath,
                             messenger.limits.max_inline_bytes, messenger.limits.max_compress_height,
@@ -189,10 +189,10 @@ class Pipeline:
                             as_document = True  # la compresión no bastó: cae a documento
 
                     if as_document:
-                        await messenger.update("📦 No se pudo comprimir, enviando como documento...")
+                        await messenger.update("📦 No pude comprimirlo, va como archivo")
                         await messenger.send_document(filepath, caption=quality_note, song=song)
                     else:
-                        await messenger.update("📤 Enviando video...")
+                        await messenger.update("📤 Preparando el archivo")
                         await messenger.send_video(
                             send_path, width=width or None, height=height or None,
                             caption=quality_note, song=song,
@@ -212,7 +212,7 @@ class Pipeline:
         messenger: Messenger,
         user_pref_height: int | None = None,
     ) -> None:
-        await messenger.update("⏳ En cola...")
+        await messenger.update("⏳ En cola")
         items: list[dict] = []
         effective_height = user_pref_height or self._default_height
 
@@ -227,7 +227,7 @@ class Pipeline:
                     await messenger.update("⚠️ No pude descargar el contenido de ese post.")
                     return
 
-                await messenger.update(f"📤 Enviando {len(items)} elementos...")
+                await messenger.update(f"📤 Preparando {len(items)} elementos")
                 await messenger.send_album(items)
                 await messenger.finish()
 
@@ -247,7 +247,7 @@ class Pipeline:
                 filepath, meta = await loop.run_in_executor(None, download_song, query, progress_cb)
                 title = meta["title"]
                 artist = meta.get("artist")
-                await messenger.update("📤 Enviando audio...")
+                await messenger.update("📤 Preparando el archivo")
                 await messenger.send_audio(
                     filepath, title=title, performer=artist,
                     filename=_audio_filename(title, artist),

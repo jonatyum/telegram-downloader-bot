@@ -1,9 +1,19 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <!-- CUARTO BLOQUE DE TEMA DEL PROYECTO.
+       Un SVG referenciado con <link rel="icon"> no ve el CSS de la página, así que
+       repite el acento y el tema oscuro a mano. Los tres bloques de tokens viven en
+       index.html (:root, @media prefers-color-scheme y :root[data-theme="dark"]);
+       este es el cuarto y hay que mantenerlo en sync: si cambia --accent, cambia acá.
+       Nota: el <link rel="icon"> no propaga data-theme, así que el favicon solo puede
+       seguir la preferencia del sistema, no la elegida en el selector de la página. -->
   <style>
-    .bg { fill: #0071E3; }
-    .fg { stroke: #fff; }
+    .bg { fill: #0F5D42; }   /* --accent, tema claro */
+    .fg { stroke: #FFFDF9; } /* --accent-ink, tema claro */
     @media (prefers-color-scheme: dark) {
-      .bg { fill: #0A84FF; }
+      .bg { fill: #58D3A0; }   /* --accent, tema oscuro */
+      /* El trazo TAMBIÉN cambia: --accent-ink deja de ser claro en oscuro. Un
+         #FFFDF9 sobre la menta daría 1.7:1 y la flecha se perdería. */
+      .fg { stroke: #12100E; } /* --accent-ink, tema oscuro */
     }
   </style>
   <rect class="bg" width="32" height="32" rx="8"/>

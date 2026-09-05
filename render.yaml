@@ -19,6 +19,10 @@ services:
       # Token secreto opcional para validar los webhooks de Telegram
       - key: WEBHOOK_SECRET
         sync: false
+      # URL pública del frontend. El bot la ofrece cuando un video pasa su límite
+      # de tamaño, porque la web no tiene el tope de 50 MB del Bot API.
+      - key: WEB_URL
+        value: "https://jonatyum.github.io/telegram-downloader-bot/"
       # --- Límites conservadores para los 512 MB de RAM del plan free ---
       - key: MAX_CONCURRENT_DOWNLOADS
         value: "2"

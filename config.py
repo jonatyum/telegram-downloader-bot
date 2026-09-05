@@ -119,6 +119,12 @@ RETRY_BACKOFF_SECONDS = 2     # espera entre intentos
 
 ADMIN_CHAT_ID: str | None = os.getenv("ADMIN_CHAT_ID")
 
+# URL pública del canal web. El bot la ofrece cuando un video supera el límite de
+# 50 MB del Bot API de Telegram: la web no tiene ese tope, así que es la salida
+# natural de ese callejón. Vacía = el bot no menciona la web (el aviso de límite
+# se queda como estaba), para que un despliegue sin canal web no prometa nada roto.
+WEB_URL: str = os.getenv("WEB_URL", "")
+
 # Avisar al admin "Bot iniciado" en cada arranque. En Render free el bot se levanta
 # de cero cada vez que despierta del sleep, así que por defecto está apagado para no
 # spamear. Ponlo a 1 solo si quieres ver cada arranque.
