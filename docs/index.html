@@ -3,8 +3,10 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Videito</title>
-<meta name="description" content="Descarga video o audio de TikTok, Instagram, Facebook, YouTube o X directamente desde el navegador.">
+<title>Videito — Descargar videos de TikTok, Instagram, YouTube, Facebook y X</title>
+<meta name="description" content="Pega el link y descarga el video o solo el MP3. Sin anuncios, sin cuenta y sin marca de agua. En el navegador, o como bot de Telegram.">
+<meta name="theme-color" content="#F5F2EC" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#12100E" media="(prefers-color-scheme: dark)">
 <link rel="icon" type="image/svg+xml" href="favicon.svg">
 <script>
   // Aplica el tema guardado ANTES de pintar el CSS, para no mostrar un parpadeo del
@@ -17,50 +19,115 @@
   } catch (e) {}
 </script>
 <style>
+  /* --- Tipografía -----------------------------------------------------------
+     Autohospedada en docs/fonts/, no desde Google Fonts: la página promete "sin
+     rastreo" y un <link> a fonts.googleapis.com filtraría la IP de cada visita a un
+     tercero. Además evita el preconnect y una dependencia de red que puede fallar.
+     font-display:swap pinta el texto de inmediato con el stack del sistema y cambia
+     a la fuente propia al llegar; si el .woff2 no carga, la página se ve completa
+     igual. El unicode-range es el subset "latin" — cualquier glifo fuera de ese
+     rango cae al fallback sin descargar nada. */
+  @font-face {
+    font-family: "Instrument Sans";
+    src: url("fonts/instrument-sans-latin.woff2") format("woff2");
+    font-weight: 400 700;  /* variable: cubre 400, 600 y 700 con un solo archivo */
+    font-style: normal;
+    font-display: swap;
+    unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+  }
+  @font-face {
+    font-family: "Instrument Serif";
+    src: url("fonts/instrument-serif-latin.woff2") format("woff2");
+    font-weight: 400;  /* peso único: por eso los títulos no usan bold */
+    font-style: normal;
+    font-display: swap;
+    unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+  }
+
+  /* --- Tokens ---------------------------------------------------------------
+     Los tres bloques de tema (:root, @media prefers-color-scheme y
+     :root[data-theme="dark"]) tienen que declarar EXACTAMENTE las mismas claves.
+     Los dos oscuros son copias literales: si tocás uno, tocá el otro.
+     Hay un cuarto bloque de tema fuera de este archivo: favicon.svg, que repite
+     el acento a mano. Cambiar --accent implica abrirlo también. */
   :root {
-    --ground:#F5F5F7; --ground-2:#EBEBF0; --surface:#FFFFFF; --sunk:#F0F0F3;
-    --ink:#1D1D1F; --ink-2:#424245; --muted:#6E6E73; --faint:#8E8E93;
-    --hair:rgba(0,0,0,.10); --hair-2:rgba(0,0,0,.16);
-    --accent:#0071E3; --accent-ink:#FFFFFF; --accent-wash:rgba(0,113,227,.10);
-    --good:#248A3D; --good-wash:rgba(52,199,89,.13);
-    --warn:#B25000; --warn-wash:rgba(255,149,0,.13);
-    --bad:#C7332B;  --bad-wash:rgba(255,59,48,.11);
-    --chrome:rgba(245,245,247,.72);
-    --shadow:0 1px 2px rgba(0,0,0,.04), 0 8px 28px -14px rgba(0,0,0,.18);
-    --lift:0 2px 6px rgba(0,0,0,.06), 0 18px 48px -20px rgba(0,0,0,.30);
-    --sans:-apple-system,BlinkMacSystemFont,"SF Pro Text","Segoe UI",system-ui,sans-serif;
+    color-scheme: light;
+
+    --ground:#F5F2EC; --ground-2:#EBE6DC; --surface:#FFFDF9; --sunk:#F0EBE1;
+    --ink:#191512;    --ink-2:#3D372F;    --muted:#6A6158;   --faint:#6F665C;
+    --hair:rgba(25,21,18,.12); --hair-2:rgba(25,21,18,.20);
+    --accent:#0F5D42; --accent-ink:#FFFDF9; --accent-wash:rgba(15,93,66,.09);
+    --good:#0F5D42;   --good-wash:rgba(15,93,66,.09);
+    --warn:#8A5300;   --warn-wash:rgba(138,83,0,.10);
+    --bad:#B3261E;    --bad-wash:rgba(179,38,30,.09);
+    --shadow:0 1px 0 rgba(25,21,18,.04), 0 6px 14px -12px rgba(25,21,18,.30);
+    --lift:0 1px 0 rgba(25,21,18,.05),  0 14px 30px -22px rgba(25,21,18,.40);
+
+    /* Derivados: el borde de foco del campo es su propio token para poder
+       despegarlo del acento si alguna vez no llega a 3:1 contra --sunk. */
+    --field-focus:var(--accent);
+    --seg-active-shadow:rgba(25,21,18,.10);
+    /* Velo sobre la miniatura: negro fijo porque va encima de una imagen
+       arbitraria, no de una superficie del tema. */
+    --scrim:rgba(25,21,18,.68); --on-scrim:#FFFDF9;
+    /* La flecha de los <select> es un background-image: no puede heredar
+       currentColor, así que el color va cocido en la data-URI (%23 = '#'). */
+    --arrow:url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="10" height="6"><path d="M1 1l4 4 4-4" stroke="%236F665C" stroke-width="1.5" fill="none" stroke-linecap="round"/></svg>');
+
+    --serif:"Instrument Serif",Georgia,"Times New Roman",serif;
+    --sans:"Instrument Sans",-apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-serif;
     --mono:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,monospace;
+
+    --t-0:.6875rem; --t-1:.75rem; --t-2:.8125rem; --t-3:.875rem;
+    --t-4:.9375rem; --t-5:1.0625rem; --t-6:1.25rem;
+    --t-7:clamp(1.875rem, 6vw, 2.75rem);
+
+    --r-sm:.375rem; --r-md:.625rem; --r-lg:.875rem; --r-xl:1.125rem; --r-pill:62.5rem;
+
+    /* Chrome de la ventana de la demo: oscuro en los DOS temas (es una captura de
+       producto), así que no sigue a --surface. Ver .screen. */
+    --bezel:#2A2521; --bezel-ring:rgba(25,21,18,.22); --bezel-ink:rgba(243,239,232,.66);
+    /* El punto de grabación no usa --bad: el --bad de tema claro (#B3261E) sobre
+       este bisel oscuro da 2.3:1, invisible. Fijo en los dos temas, 5.9:1 / 4.8:1. */
+    --bezel-dot:#F08279;
   }
   @media (prefers-color-scheme: dark) {
     :root:not([data-theme="light"]) {
-      --ground:#000; --ground-2:#141416; --surface:#1C1C1E; --sunk:#242426;
-      --ink:#F5F5F7; --ink-2:#D6D6DA; --muted:#98989D; --faint:#7C7C81;
-      --hair:rgba(255,255,255,.12); --hair-2:rgba(255,255,255,.20);
-      --accent:#0A84FF; --accent-wash:rgba(10,132,255,.16);
-      --good:#30D158; --good-wash:rgba(48,209,88,.15);
-      --warn:#FF9F0A; --warn-wash:rgba(255,159,10,.15);
-      --bad:#FF6961;  --bad-wash:rgba(255,69,58,.15);
-      --chrome:rgba(0,0,0,.68);
-      --shadow:0 1px 2px rgba(0,0,0,.5), 0 8px 28px -14px rgba(0,0,0,.8);
-      --lift:0 2px 6px rgba(0,0,0,.55), 0 18px 48px -20px rgba(0,0,0,.9);
+      color-scheme: dark;
+      --ground:#12100E; --ground-2:#1A1714; --surface:#211D19; --sunk:#2A2521;
+      --ink:#F3EFE8;    --ink-2:#D8D1C6;    --muted:#A39A8E;   --faint:#9A9184;
+      --hair:rgba(243,239,232,.13); --hair-2:rgba(243,239,232,.22);
+      --accent:#58D3A0; --accent-ink:#12100E; --accent-wash:rgba(88,211,160,.15);
+      --good:#58D3A0;   --good-wash:rgba(88,211,160,.15);
+      --warn:#E0A33A;   --warn-wash:rgba(224,163,58,.15);
+      --bad:#F08279;    --bad-wash:rgba(240,130,121,.15);
+      --shadow:0 1px 0 rgba(0,0,0,.5), 0 8px 20px -16px rgba(0,0,0,.85);
+      --lift:0 1px 0 rgba(0,0,0,.55), 0 18px 40px -26px rgba(0,0,0,.95);
+      --seg-active-shadow:rgba(0,0,0,.55);
+      --scrim:rgba(0,0,0,.72); --on-scrim:#F3EFE8;
+      --arrow:url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="10" height="6"><path d="M1 1l4 4 4-4" stroke="%239A9184" stroke-width="1.5" fill="none" stroke-linecap="round"/></svg>');
+      --bezel:#3A342E; --bezel-ring:rgba(243,239,232,.16);
     }
   }
   :root[data-theme="dark"] {
-    --ground:#000; --ground-2:#141416; --surface:#1C1C1E; --sunk:#242426;
-    --ink:#F5F5F7; --ink-2:#D6D6DA; --muted:#98989D; --faint:#7C7C81;
-    --hair:rgba(255,255,255,.12); --hair-2:rgba(255,255,255,.20);
-    --accent:#0A84FF; --accent-wash:rgba(10,132,255,.16);
-    --good:#30D158; --good-wash:rgba(48,209,88,.15);
-    --warn:#FF9F0A; --warn-wash:rgba(255,159,10,.15);
-    --bad:#FF6961;  --bad-wash:rgba(255,69,58,.15);
-    --chrome:rgba(0,0,0,.68);
-    --shadow:0 1px 2px rgba(0,0,0,.5), 0 8px 28px -14px rgba(0,0,0,.8);
-    --lift:0 2px 6px rgba(0,0,0,.55), 0 18px 48px -20px rgba(0,0,0,.9);
+    color-scheme: dark;
+    --ground:#12100E; --ground-2:#1A1714; --surface:#211D19; --sunk:#2A2521;
+    --ink:#F3EFE8;    --ink-2:#D8D1C6;    --muted:#A39A8E;   --faint:#9A9184;
+    --hair:rgba(243,239,232,.13); --hair-2:rgba(243,239,232,.22);
+    --accent:#58D3A0; --accent-ink:#12100E; --accent-wash:rgba(88,211,160,.15);
+    --good:#58D3A0;   --good-wash:rgba(88,211,160,.15);
+    --warn:#E0A33A;   --warn-wash:rgba(224,163,58,.15);
+    --bad:#F08279;    --bad-wash:rgba(240,130,121,.15);
+    --shadow:0 1px 0 rgba(0,0,0,.5), 0 8px 20px -16px rgba(0,0,0,.85);
+    --lift:0 1px 0 rgba(0,0,0,.55), 0 18px 40px -26px rgba(0,0,0,.95);
+    --seg-active-shadow:rgba(0,0,0,.55);
+    --scrim:rgba(0,0,0,.72); --on-scrim:#F3EFE8;
+    --arrow:url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="10" height="6"><path d="M1 1l4 4 4-4" stroke="%239A9184" stroke-width="1.5" fill="none" stroke-linecap="round"/></svg>');
+    --bezel:#3A342E; --bezel-ring:rgba(243,239,232,.16);
   }
-  @media (prefers-reduced-transparency: reduce) { :root { --chrome: var(--ground); } }
   @media (prefers-contrast: more) {
-    :root { --hair: rgba(0,0,0,.5); --muted: #3A3A3C; }
-    :root:not([data-theme="light"]) { --hair: rgba(255,255,255,.55); }
+    :root { --hair:rgba(25,21,18,.48); --muted:#4A423A; --faint:#4A423A; }
+    :root:not([data-theme="light"]) { --hair:rgba(243,239,232,.52); --muted:#C6BDB1; --faint:#C6BDB1; }
   }
 
   * { box-sizing: border-box; }
@@ -73,87 +140,99 @@
     padding: 4vh 1.25rem 3rem;
   }
 
-  header { text-align: center; margin-bottom: 1.75rem; max-width: 26rem; }
-  h1 { font-size: clamp(1.625rem, 5vw, 2.125rem); font-weight: 700; letter-spacing: -.026em; margin: 0 0 .5rem; }
-  header p { color: var(--muted); font-size: .9375rem; line-height: 1.5; margin: 0; letter-spacing: -.006em; }
+  header { text-align: center; margin-bottom: 1.75rem; max-width: 28rem; }
+  /* Instrument Serif tiene un solo peso (400): los títulos no llevan bold, el
+     contraste con el cuerpo lo da el cambio de familia y el tamaño. */
+  h1 {
+    font-family: var(--serif); font-size: var(--t-7); font-weight: 400;
+    line-height: 1.08; letter-spacing: -.01em; margin: 0 0 .625rem;
+  }
+  h2 { font-family: var(--serif); font-weight: 400; }
+  header p { color: var(--muted); font-size: var(--t-4); line-height: 1.55; margin: 0; }
   header p + p { margin-top: .625rem; }
 
   .eyebrow {
-    display: inline-block; font-size: .6875rem; font-weight: 700;
+    display: inline-block; font-size: var(--t-0); font-weight: 600;
     text-transform: uppercase; letter-spacing: .07em;
     color: var(--accent); background: var(--accent-wash);
-    border-radius: 62.5rem; padding: .3125rem .625rem; margin-bottom: .75rem;
+    border-radius: var(--r-pill); padding: .3125rem .625rem; margin-bottom: .75rem;
   }
 
   /* Las plataformas soportadas se listan también como etiquetas: es lo primero que
      alguien busca al llegar ("¿sirve para mi link?") y en el párrafo se pierden. */
   .platforms { display: flex; flex-wrap: wrap; gap: .375rem; justify-content: center; margin-top: .875rem; padding: 0; list-style: none; }
   .platforms li {
-    font-size: .75rem; font-weight: 600; letter-spacing: -.003em; color: var(--ink-2);
+    font-size: var(--t-1); font-weight: 600; color: var(--ink-2);
     background: var(--surface); border: 1px solid var(--hair);
-    border-radius: 62.5rem; padding: .3125rem .625rem;
+    border-radius: var(--r-pill); padding: .3125rem .625rem;
   }
 
   .steps { display: flex; flex-direction: column; gap: .5rem; margin: 1.125rem 0 0; padding: 0; list-style: none; counter-reset: paso; }
   .steps li {
     display: flex; align-items: center; gap: .625rem;
-    font-size: .8125rem; color: var(--ink-2); letter-spacing: -.003em; text-align: left;
+    font-size: var(--t-2); color: var(--ink-2); text-align: left;
   }
   .steps li::before {
     counter-increment: paso; content: counter(paso);
-    flex-shrink: 0; width: 1.375rem; height: 1.375rem; border-radius: 62.5rem;
+    flex-shrink: 0; width: 1.375rem; height: 1.375rem; border-radius: var(--r-pill);
     background: var(--accent); color: var(--accent-ink);
-    font-size: .6875rem; font-weight: 700;
+    font-size: var(--t-0); font-weight: 600;
     display: flex; align-items: center; justify-content: center;
   }
-  @media (max-width: 59.99rem) { .steps { max-width: 20rem; margin-left: auto; margin-right: auto; } }
+  @media (max-width: 59.99rem) { .steps { max-width: 21rem; margin-left: auto; margin-right: auto; } }
 
-  /* Debajo de 60rem (tablets y celulares) todo se apila en una sola columna centrada,
-     como hoy. A partir de ahí la cabecera y la tarjeta pasan a convivir lado a lado:
-     en pantallas anchas, una columna angosta centrada dejaba demasiado espacio vacío
-     alrededor — acá la funcionalidad (la tarjeta) queda visible junto a la explicación,
-     no apilada muy por debajo de un título suelto. */
+  /* Debajo de 60rem (tablets y celulares) todo se apila en una sola columna centrada.
+     A partir de ahí la cabecera y la tarjeta pasan a convivir lado a lado: en pantallas
+     anchas, una columna angosta centrada dejaba demasiado espacio vacío alrededor —
+     acá la funcionalidad (la tarjeta) queda visible junto a la explicación. */
   .hero { display: flex; flex-direction: column; align-items: center; width: 100%; }
   @media (min-width: 60rem) {
     .hero {
       flex-direction: row; align-items: center; justify-content: center;
       gap: 3.5rem; max-width: 62rem; margin: 0 auto;
     }
-    .hero header { text-align: left; max-width: 26rem; margin-bottom: 0; flex: 1 1 26rem; }
-    .hero header h1 { font-size: clamp(2.5rem, 3.4vw, 3.25rem); }
-    .hero header p { font-size: 1.0625rem; line-height: 1.6; }
+    .hero header { text-align: left; max-width: 28rem; margin-bottom: 0; flex: 1 1 28rem; }
+    .hero header h1 { font-size: clamp(2.75rem, 4vw, 3.75rem); }
+    .hero header p { font-size: var(--t-5); line-height: 1.6; }
     .hero header .platforms { justify-content: flex-start; }
-    .hero .card { flex: 0 0 26rem; }
+    .hero .card { flex: 0 0 28rem; }
   }
 
   /* En flujo normal (no position:fixed) a propósito: flotar en una esquina fija
      terminaba superponiéndose al título en viewports angostos. */
-  .topbar { width: 100%; max-width: 26rem; display: flex; justify-content: flex-end; margin-bottom: 1rem; }
+  .topbar { width: 100%; max-width: 28rem; display: flex; justify-content: flex-end; margin-bottom: 1rem; }
   @media (min-width: 60rem) { .topbar { max-width: 62rem; } }
   .theme-picker select {
     appearance: none; -webkit-appearance: none; cursor: pointer;
-    font-family: var(--sans); font-size: .75rem; font-weight: 600; letter-spacing: .006em; color: var(--ink);
-    background: var(--surface) url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="10" height="6"><path d="M1 1l4 4 4-4" stroke="%236E6E73" stroke-width="1.5" fill="none" stroke-linecap="round"/></svg>') no-repeat right .5625rem center;
+    font-family: var(--sans); font-size: var(--t-1); font-weight: 600; color: var(--ink);
+    background: var(--surface) var(--arrow) no-repeat right .5625rem center;
     border: 1px solid var(--hair); box-shadow: var(--shadow);
-    border-radius: 62.5rem; padding: .4375rem 1.5625rem .4375rem .75rem;
+    border-radius: var(--r-pill); padding: .4375rem 1.5625rem .4375rem .75rem;
+    transition: border-color 140ms ease;
   }
+  .theme-picker select:hover { border-color: var(--hair-2); }
 
   .card {
-    width: 100%; max-width: 26rem;
+    width: 100%; max-width: 28rem;
     background: var(--surface); border: 1px solid var(--hair);
-    border-radius: 1.25rem; box-shadow: var(--lift);
-    padding: 1.5rem;
-    display: flex; flex-direction: column; gap: 1.125rem;
+    border-radius: var(--r-lg); box-shadow: var(--lift);
+    padding: 1.375rem;
+    display: flex; flex-direction: column; gap: 1rem;
   }
-  @media (max-width: 26rem) { .card { padding: 1.25rem; border-radius: 1rem; } }
+  @media (max-width: 28rem) { .card { padding: 1.125rem; } }
 
   .field {
     display: flex; align-items: center; gap: .5rem;
-    background: var(--sunk); border: 1.5px solid transparent; border-radius: .75rem;
+    background: var(--sunk); border: 1.5px solid transparent; border-radius: var(--r-md);
     padding: .1875rem .1875rem .1875rem .875rem;
-    transition: border-color 160ms ease, background 160ms ease;
+    transition: border-color 160ms ease, background 160ms ease, box-shadow 160ms ease;
   }
-  .field:focus-within { border-color: var(--accent); background: var(--surface); }
+  /* Dos señales de foco, no solo el color del borde: el halo sobrevive a daltonismo
+     y a un acento que no llegue a 3:1 contra --sunk. */
+  .field:focus-within {
+    border-color: var(--field-focus); background: var(--surface);
+    box-shadow: 0 0 0 3px var(--accent-wash);
+  }
   .field input {
     flex: 1; min-width: 0; border: 0; background: transparent; outline: none;
     font-family: var(--sans); font-size: 1rem; color: var(--ink); padding: .625rem 0;
@@ -161,7 +240,7 @@
   .field input::placeholder { color: var(--faint); }
   .paste-btn {
     flex: none; display: flex; align-items: center; justify-content: center;
-    width: 2.125rem; height: 2.125rem; border: 0; border-radius: .625rem;
+    width: 2.25rem; height: 2.25rem; border: 0; border-radius: var(--r-sm);
     background: transparent; color: var(--faint); cursor: pointer;
     transition: background 140ms ease, color 140ms ease;
   }
@@ -174,45 +253,53 @@
   .row { display: flex; gap: .625rem; flex-wrap: wrap; align-items: center; justify-content: space-between; }
   @media (max-width: 23rem) { .row { flex-direction: column; align-items: stretch; } }
 
-  .seg { display: inline-flex; background: var(--sunk); border-radius: .625rem; padding: .1875rem; gap: .1875rem; }
+  .seg { display: inline-flex; background: var(--sunk); border-radius: var(--r-md); padding: .1875rem; gap: .1875rem; }
   @media (max-width: 23rem) { .seg { width: 100%; } }
   .seg button {
     appearance: none; border: 0; background: transparent; cursor: pointer; flex: 1;
-    font-family: var(--sans); font-size: .8125rem; font-weight: 600; letter-spacing: .006em; color: var(--muted);
-    padding: .4375rem .75rem; border-radius: .4375rem;
+    font-family: var(--sans); font-size: var(--t-2); font-weight: 600; color: var(--muted);
+    padding: .4375rem .75rem; border-radius: var(--r-sm); white-space: nowrap;
     transition: background 140ms ease, color 140ms ease, transform 110ms cubic-bezier(.2,.7,.3,1);
   }
-  .seg button.active { background: var(--surface); color: var(--ink); box-shadow: 0 1px 2px rgba(0,0,0,.08); }
+  .seg button:hover { color: var(--ink); }
+  .seg button.active { background: var(--surface); color: var(--ink); box-shadow: 0 1px 2px var(--seg-active-shadow); }
   .seg button.pressed { transform: scale(.94); }
 
   select {
-    appearance: none; -webkit-appearance: none;
-    font-family: var(--sans); font-size: .8125rem; font-weight: 600; letter-spacing: .006em; color: var(--ink);
-    background: var(--sunk) url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="10" height="6"><path d="M1 1l4 4 4-4" stroke="%236E6E73" stroke-width="1.5" fill="none" stroke-linecap="round"/></svg>') no-repeat right .625rem center;
-    border: 0; border-radius: .625rem; padding: .5rem 1.75rem .5rem .75rem;
+    appearance: none; -webkit-appearance: none; cursor: pointer;
+    font-family: var(--sans); font-size: var(--t-2); font-weight: 600; color: var(--ink);
+    background: var(--sunk) var(--arrow) no-repeat right .625rem center;
+    border: 1px solid transparent; border-radius: var(--r-md); padding: .5rem 1.75rem .5rem .75rem;
+    transition: border-color 140ms ease;
   }
+  select:hover { border-color: var(--hair-2); }
   @media (max-width: 23rem) { select { width: 100%; } }
 
   .btn {
     appearance: none; border: 0; cursor: pointer; width: 100%;
     background: var(--accent); color: var(--accent-ink);
-    font-family: var(--sans); font-size: .9375rem; font-weight: 600; letter-spacing: -.003em;
-    padding: .75rem; border-radius: .75rem;
-    transition: transform 110ms cubic-bezier(.2,.7,.3,1), opacity 160ms ease;
+    font-family: var(--sans); font-size: var(--t-4); font-weight: 600;
+    padding: .75rem; border-radius: var(--r-md);
+    transition: transform 110ms cubic-bezier(.2,.7,.3,1), opacity 160ms ease, filter 140ms ease;
   }
-  .btn:disabled { opacity: .4; cursor: default; }
+  /* Sin token --accent-strong: un filter mantiene el hover correcto en los dos
+     temas (oscurece el verde en claro, aclara la menta en oscuro) sin sumar
+     dos entradas más a los tres bloques de tema. */
+  .btn:hover:not(:disabled) { filter: brightness(1.12); }
+  .btn:disabled { opacity: .45; cursor: default; }
   .btn.pressed { transform: scale(.98); }
   .btn.ghost { background: var(--sunk); color: var(--ink); }
+  .btn.ghost:hover { filter: none; background: var(--ground-2); }
   @media (prefers-reduced-motion: reduce) {
-    .btn, .seg button { transition: opacity 160ms ease, background 140ms ease, color 140ms ease; }
+    .btn, .seg button { transition: opacity 160ms ease, background 140ms ease, color 140ms ease, filter 140ms ease; }
     .btn.pressed, .seg button.pressed { transform: none; }
   }
 
   .chip {
-    font-size: .75rem; font-weight: 600; letter-spacing: .01em; padding: .25rem .5625rem; border-radius: 62.5rem;
+    font-size: var(--t-1); font-weight: 600; padding: .25rem .5625rem; border-radius: var(--r-pill);
     background: var(--sunk); color: var(--faint); align-self: flex-start;
   }
-  .chip.match { background: var(--accent-wash); color: var(--accent); }
+  .chip.match { background: var(--good-wash); color: var(--good); }
   .chip.bad { background: var(--bad-wash); color: var(--bad); }
 
   /* Previsualización: la miniatura se pide al backend (no al <img src> directo) porque
@@ -223,23 +310,23 @@
   }
   .preview-thumb {
     position: relative; flex-shrink: 0; width: 4.5rem; height: 4.5rem;
-    border-radius: .625rem; overflow: hidden; background: var(--sunk);
+    border-radius: var(--r-sm); overflow: hidden; background: var(--sunk);
   }
   .preview-thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
   .preview-thumb .dur {
     position: absolute; right: .25rem; bottom: .25rem;
-    background: rgba(0,0,0,.65); color: #fff; font-size: .625rem; font-weight: 600;
-    letter-spacing: .02em; padding: .0625rem .3125rem; border-radius: .25rem;
+    background: var(--scrim); color: var(--on-scrim); font-size: var(--t-0); font-weight: 600;
+    padding: .0625rem .3125rem; border-radius: .25rem;
     font-variant-numeric: tabular-nums;
   }
   .preview-text { min-width: 0; display: flex; flex-direction: column; gap: .1875rem; }
   .preview-title {
-    font-size: .875rem; font-weight: 600; letter-spacing: -.003em;
+    font-size: var(--t-3); font-weight: 600;
     overflow: hidden; text-overflow: ellipsis; display: -webkit-box;
     -webkit-line-clamp: 2; -webkit-box-orient: vertical;
   }
-  .preview-sub { font-size: .75rem; color: var(--muted); }
-  .preview-checking { display: flex; align-items: center; gap: .625rem; font-size: .8125rem; color: var(--muted); }
+  .preview-sub { font-size: var(--t-1); color: var(--muted); font-variant-numeric: tabular-nums; }
+  .preview-checking { display: flex; align-items: center; gap: .625rem; font-size: var(--t-2); color: var(--muted); }
   .preview-checking .dot {
     width: .5rem; height: .5rem; border-radius: 50%; background: var(--accent);
     animation: pulse 1.1s ease-in-out infinite;
@@ -249,24 +336,56 @@
 
   .stage { display: flex; flex-direction: column; gap: .875rem; will-change: transform, opacity, filter; }
   .prog { display: flex; flex-direction: column; gap: .5rem; }
-  .prog-text { font-size: .875rem; font-weight: 600; letter-spacing: -.003em; text-align: center; }
-  .track { height: .375rem; border-radius: 62.5rem; background: var(--sunk); overflow: hidden; }
-  .fill { height: 100%; width: 30%; border-radius: 62.5rem; background: var(--accent); animation: indet 1.1s ease-in-out infinite; transform-origin: left center; }
+  .prog-text { font-size: var(--t-3); font-weight: 600; text-align: center; font-variant-numeric: tabular-nums; }
+  .track { height: .375rem; border-radius: var(--r-pill); background: var(--sunk); overflow: hidden; }
+  .fill { height: 100%; width: 30%; border-radius: var(--r-pill); background: var(--accent); animation: indet 1.1s ease-in-out infinite; transform-origin: left center; }
   @keyframes indet { 0% { transform: translateX(-100%) scaleX(.4); } 50% { transform: translateX(50%) scaleX(.7); } 100% { transform: translateX(220%) scaleX(.4); } }
   @media (prefers-reduced-motion: reduce) { .fill { animation: none; width: 60%; } }
 
+  /* Render free duerme el servicio tras un rato sin uso y despertarlo tarda ~50 s.
+     Sin este aviso lo único que se ve es una barra indeterminada, que a los 30 s
+     ya se lee como "se colgó". */
+  .slow-note {
+    font-size: var(--t-1); line-height: 1.45; margin: 0;
+    color: var(--warn); background: var(--warn-wash);
+    border-radius: var(--r-sm); padding: .5rem .625rem;
+  }
+
   .result { display: flex; flex-direction: column; gap: .625rem; }
   .result a.btn { text-decoration: none; text-align: center; display: block; }
-  .result .n { font-size: .8125rem; color: var(--muted); }
+  .result .n { font-size: var(--t-2); color: var(--muted); }
 
-  .err { font-size: .875rem; color: var(--bad); background: var(--bad-wash); border-radius: .625rem; padding: .75rem .875rem; letter-spacing: -.003em; }
+  .err { font-size: var(--t-3); color: var(--bad); background: var(--bad-wash); border-radius: var(--r-sm); padding: .75rem .875rem; }
 
-  .features { width: 100%; max-width: 26rem; margin-top: 2.25rem; display: flex; flex-direction: column; gap: 1rem; }
-  .features h2 { font-size: 1.0625rem; font-weight: 700; letter-spacing: -.015em; margin: 0; text-align: center; }
+  /* --- Banda de Telegram ----------------------------------------------------
+     El bot es el diferencial más defendible del producto y hasta ahora vivía como
+     un avatar de 28px en el footer. Va entre la tarjeta y el manual: después de que
+     quedó claro qué hace la web, antes de la explicación larga. */
+  .tg {
+    width: 100%; max-width: 28rem; margin-top: 2.25rem;
+    background: var(--surface); border: 1px solid var(--hair); border-radius: var(--r-xl);
+    box-shadow: var(--shadow); padding: 1.375rem;
+    display: flex; flex-direction: column; gap: .625rem; align-items: flex-start;
+  }
+  @media (min-width: 60rem) {
+    .tg {
+      max-width: 62rem; margin-top: 3.5rem; padding: 1.75rem 2rem;
+      flex-direction: row; align-items: center; gap: 2rem;
+    }
+    .tg-text { flex: 1 1 auto; }
+    .tg .btn { width: auto; flex: none; white-space: nowrap; }
+  }
+  .tg h2 { font-size: var(--t-6); line-height: 1.2; margin: 0 0 .375rem; }
+  .tg p { font-size: var(--t-2); color: var(--muted); line-height: 1.5; margin: 0; }
+  .tg .tg-note { font-size: var(--t-1); color: var(--faint); margin-top: .375rem; }
+  .tg .btn { text-decoration: none; text-align: center; display: block; padding: .625rem 1.125rem; }
+
+  .features { width: 100%; max-width: 28rem; margin-top: 2.25rem; display: flex; flex-direction: column; gap: 1rem; }
+  .features h2 { font-size: var(--t-6); margin: 0; text-align: center; }
   .feature-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: .75rem; }
   .feature-list li {
     display: flex; gap: .875rem; align-items: flex-start;
-    background: var(--surface); border: 1px solid var(--hair); border-radius: 1rem;
+    background: var(--surface); border: 1px solid var(--hair); border-radius: var(--r-lg);
     padding: .875rem 1rem; box-shadow: var(--shadow);
   }
   @media (min-width: 60rem) {
@@ -274,14 +393,14 @@
     .feature-list { display: grid; grid-template-columns: repeat(3, 1fr); gap: 1rem; }
   }
   .feature-icon {
-    flex-shrink: 0; width: 2.25rem; height: 2.25rem; border-radius: .625rem;
+    flex-shrink: 0; width: 2.25rem; height: 2.25rem; border-radius: var(--r-sm);
     background: var(--accent-wash); color: var(--accent);
     display: flex; align-items: center; justify-content: center;
   }
   .feature-icon svg { width: 1.125rem; height: 1.125rem; }
   .feature-text { display: flex; flex-direction: column; gap: .1875rem; padding-top: .0625rem; }
-  .feature-text strong { font-size: .875rem; font-weight: 600; letter-spacing: -.006em; }
-  .feature-text span { font-size: .8125rem; color: var(--muted); line-height: 1.45; letter-spacing: -.003em; }
+  .feature-text strong { font-size: var(--t-3); font-weight: 600; }
+  .feature-text span { font-size: var(--t-2); color: var(--muted); line-height: 1.45; }
 
   /* --- Manual ---------------------------------------------------------------
      Todo lo que enseña a usar la página vive dentro de esta banda, sobre un fondo
@@ -289,14 +408,14 @@
      tarjeta, así que suelta se confunde con el formulario de arriba: la banda la
      saca del "área donde se hacen cosas" y la mete en el "área que explica". */
   .manual {
-    width: 100%; max-width: 26rem; margin-top: 2.5rem;
-    background: var(--ground-2); border: 1px solid var(--hair); border-radius: 1.5rem;
+    width: 100%; max-width: 28rem; margin-top: 2.5rem;
+    background: var(--ground-2); border: 1px solid var(--hair); border-radius: var(--r-xl);
     padding: 1.5rem 1.125rem;
     display: flex; flex-direction: column; gap: 2rem;
   }
   @media (min-width: 60rem) { .manual { max-width: 62rem; margin-top: 3.5rem; padding: 2.25rem 2rem; } }
   .manual-eyebrow {
-    align-self: center; font-size: .6875rem; font-weight: 700;
+    align-self: center; font-size: var(--t-0); font-weight: 600;
     text-transform: uppercase; letter-spacing: .07em; color: var(--muted);
     display: flex; align-items: center; gap: .5rem;
   }
@@ -306,52 +425,48 @@
   }
 
   /* Demostración en video del flujo completo. Es un <video> mudo en bucle y no un GIF:
-     mismo resultado visual, un orden de magnitud menos de peso. El <img> del <picture>
-     no aplica acá — se usa un poster para el primer cuadro mientras carga. */
+     mismo resultado visual, un orden de magnitud menos de peso. */
   .demo { width: 100%; margin: 0; display: flex; flex-direction: column; gap: .75rem; align-items: center; }
-  .demo h2 { font-size: 1.0625rem; font-weight: 700; letter-spacing: -.015em; margin: 0; text-align: center; }
+  .demo h2 { font-size: var(--t-6); margin: 0; text-align: center; }
 
-  /* Chrome de ventana alrededor del video: los tres puntos y la barra de título son
-     la convención universal de "esto es una captura de pantalla", que es exactamente
-     lo que hacía falta para que nadie intente escribir dentro de la grabación.
-     El bisel es opaco y propio (no un token de tema) porque tiene que contrastar
-     contra la banda en claro y en oscuro. */
+  /* Chrome de ventana alrededor del video: la barra de título es la convención
+     universal de "esto es una captura", que es lo que hacía falta para que nadie
+     intente escribir dentro de la grabación. Un solo punto (luz de grabación) en vez
+     de los tres semáforos de macOS: esto no es una app de escritorio.
+     El bisel es opaco y no sigue a --surface porque tiene que contrastar contra la
+     banda en claro y en oscuro; por eso son tokens propios (--bezel*) y una sola
+     regla en vez de las tres que había. */
   .screen {
-    width: 100%; max-width: 26rem; border-radius: 1rem; overflow: hidden;
-    background: #2C2C2E;
+    width: 100%; max-width: 28rem; border-radius: var(--r-lg); overflow: hidden;
+    background: var(--bezel);
     /* El anillo va en el box-shadow y no en un border para que no sume ancho al
        cuadro. Sobre fondo claro la sombra ya define el borde; sobre fondo oscuro no
-       se ve nada (una sombra negra sobre negro no existe), y sin el anillo la
-       ventana se funde con la banda. Por eso el filo claro se refuerza en oscuro. */
-    box-shadow: var(--lift), 0 0 0 1px rgba(0,0,0,.22);
-  }
-  :root[data-theme="dark"] .screen { background: #3A3A3C; box-shadow: var(--lift), 0 0 0 1px rgba(255,255,255,.16); }
-  @media (prefers-color-scheme: dark) {
-    :root:not([data-theme="light"]) .screen { background: #3A3A3C; box-shadow: var(--lift), 0 0 0 1px rgba(255,255,255,.16); }
+       se ve nada, y sin el anillo la ventana se funde con la banda. */
+    box-shadow: var(--lift), 0 0 0 1px var(--bezel-ring);
   }
   .screen-bar { position: relative; display: flex; align-items: center; gap: .375rem; padding: .5rem .625rem; }
-  .screen-dot { width: .5rem; height: .5rem; border-radius: 50%; flex-shrink: 0; }
-  /* Centrado sobre la barra entera, no sobre el hueco que dejan los puntos: con
-     márgenes automáticos el título queda corrido a la derecha justo el ancho de los
-     tres puntos. Absoluto y a ancho completo lo deja en el centro real de la ventana. */
+  .screen-dot { width: .5rem; height: .5rem; border-radius: 50%; flex-shrink: 0; background: var(--bezel-dot); }
+  /* Centrado sobre la barra entera, no sobre el hueco que deja el punto: con
+     márgenes automáticos el título queda corrido. Absoluto y a ancho completo lo
+     deja en el centro real de la ventana. */
   .screen-label {
     position: absolute; left: 0; right: 0; text-align: center; pointer-events: none;
-    font-size: .6875rem; font-weight: 600; letter-spacing: .01em; color: rgba(255,255,255,.62);
+    font-size: var(--t-0); font-weight: 600; color: var(--bezel-ink);
   }
   /* Negro fijo, no var(--ground): la grabación es siempre oscura y en tema claro se
-     vería un destello blanco mientras carga. */
-  .demo video { display: block; width: 100%; height: auto; background: #000; }
-  .demo figcaption { font-size: .8125rem; color: var(--muted); text-align: center; letter-spacing: -.003em; max-width: 26rem; }
+     vería un destello del fondo mientras carga. */
+  .demo video { display: block; width: 100%; height: auto; background: #12100E; }
+  .demo figcaption { font-size: var(--t-2); color: var(--muted); text-align: center; max-width: 28rem; }
 
   .howto { width: 100%; display: flex; flex-direction: column; gap: 1rem; }
-  .howto > h2 { font-size: 1.0625rem; font-weight: 700; letter-spacing: -.015em; margin: 0; text-align: center; }
-  .howto > p { font-size: .8125rem; color: var(--muted); text-align: center; margin: -.5rem 0 0; letter-spacing: -.003em; }
+  .howto > h2 { font-size: var(--t-6); margin: 0; text-align: center; }
+  .howto > p { font-size: var(--t-2); color: var(--muted); text-align: center; margin: -.5rem 0 0; }
   .howto-grid { display: flex; flex-direction: column; gap: 1rem; }
   @media (min-width: 60rem) {
     .howto-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 1rem; }
   }
   .howto-card {
-    background: var(--surface); border: 1px solid var(--hair); border-radius: 1rem;
+    background: var(--surface); border: 1px solid var(--hair); border-radius: var(--r-lg);
     padding: 1rem; box-shadow: var(--shadow);
     display: flex; flex-direction: column; gap: .625rem;
     /* Sin esto la grilla desborda a lo ancho: un item de grid tiene min-width:auto, o
@@ -360,30 +475,31 @@
     min-width: 0;
   }
   .howto-head { display: flex; align-items: center; gap: .5rem; }
-  .howto-head .feature-icon { width: 1.75rem; height: 1.75rem; border-radius: .5rem; }
+  .howto-head .feature-icon { width: 1.75rem; height: 1.75rem; border-radius: var(--r-sm); }
   .howto-head .feature-icon svg { width: 1rem; height: 1rem; }
-  .howto-head h3 { font-size: .875rem; font-weight: 600; letter-spacing: -.006em; margin: 0; }
+  .howto-head h3 { font-size: var(--t-3); font-weight: 600; margin: 0; }
   .howto-card ol { margin: 0; padding-left: 1.125rem; display: flex; flex-direction: column; gap: .3125rem; }
-  .howto-card li { font-size: .8125rem; color: var(--ink-2); line-height: 1.45; letter-spacing: -.003em; }
+  .howto-card li { font-size: var(--t-2); color: var(--ink-2); line-height: 1.45; }
   .howto-card li b { font-weight: 600; color: var(--ink); }
+  code { font-family: var(--mono); }
   .url-sample {
-    display: block; font-family: var(--mono); font-size: .6875rem; color: var(--muted);
-    background: var(--sunk); border-radius: .5rem; padding: .5rem .625rem;
+    display: block; font-size: var(--t-0); color: var(--muted);
+    background: var(--sunk); border-radius: var(--r-sm); padding: .5rem .625rem;
     overflow-x: auto; white-space: nowrap; -webkit-overflow-scrolling: touch;
   }
   /* Los <code> en línea de las notas (vm.tiktok.com/AbCdEf) tampoco tienen dónde
      cortar: sin esto empujan el ancho mínimo de la tarjeta. */
-  .howto-note { font-size: .75rem; color: var(--faint); line-height: 1.45; margin: 0; overflow-wrap: anywhere; }
+  .howto-note { font-size: var(--t-1); color: var(--faint); line-height: 1.45; margin: 0; overflow-wrap: anywhere; }
 
-  footer { margin-top: 1.75rem; font-size: .75rem; letter-spacing: .003em; color: var(--faint); text-align: center; max-width: 24rem; line-height: 1.55; }
+  footer { margin-top: 1.75rem; font-size: var(--t-1); color: var(--faint); text-align: center; max-width: 26rem; line-height: 1.55; }
   footer a { color: var(--faint); }
 
   .creators { display: flex; gap: .625rem; justify-content: center; flex-wrap: wrap; margin-top: 1.125rem; }
   .creator-link {
     display: inline-flex; align-items: center; gap: .5rem;
-    padding: .3125rem .8125rem .3125rem .3125rem; border-radius: 62.5rem;
+    padding: .3125rem .8125rem .3125rem .3125rem; border-radius: var(--r-pill);
     background: var(--sunk); text-decoration: none; color: var(--ink);
-    font-size: .8125rem; font-weight: 600; letter-spacing: -.003em;
+    font-size: var(--t-2); font-weight: 600;
     transition: background 140ms ease, transform 110ms cubic-bezier(.2,.7,.3,1);
   }
   .creator-link:hover { background: var(--hair); }
@@ -391,18 +507,19 @@
   .creator-avatar { position: relative; width: 1.75rem; height: 1.75rem; flex-shrink: 0; }
   .creator-avatar img { width: 100%; height: 100%; border-radius: 50%; object-fit: cover; display: block; }
   /* Insignia de Telegram sobre la foto: sin esto, dos círculos con fotos no se
-     distinguen de cualquier otro avatar — hace falta la marca para saber a dónde lleva. */
+     distinguen de cualquier otro avatar. El #29A9EA es la marca de Telegram, no la
+     nuestra: no sigue a los tokens y no cambia con el tema. */
   .creator-avatar .badge {
     position: absolute; right: -.125rem; bottom: -.125rem;
     width: .8125rem; height: .8125rem; border-radius: 50%;
     background: #29A9EA; border: 1.5px solid var(--surface);
     display: flex; align-items: center; justify-content: center;
   }
-  .creator-avatar .badge svg { width: .5rem; height: .5rem; }
+  .creator-avatar .badge svg { width: .5rem; height: .5rem; color: #fff; }
   @media (prefers-reduced-motion: reduce) { .creator-link:active { transform: none; } }
 
   .visually-hidden { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0,0,0,0); }
-  :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: .25rem; }
+  :focus-visible { outline: 2px solid var(--field-focus); outline-offset: 2px; border-radius: .25rem; }
 </style>
 </head>
 <body>
@@ -420,10 +537,10 @@
 
   <div class="hero">
     <header>
-      <span class="eyebrow">Descargador online y gratis</span>
-      <h1>Videito</h1>
-      <p>Pegá el link de un video o de un post y bajalo a tu dispositivo: el video completo, o solo el audio en MP3. Funciona en el navegador, sin instalar apps, sin cuenta y sin marca de agua.</p>
-      <p>Sirve para guardar una receta que se te va a perder del feed, quedarte con la música de un clip, archivar tus propias publicaciones o llevarte un video para verlo sin internet.</p>
+      <span class="eyebrow">Videito · Gratis, sin anuncios, sin cuenta</span>
+      <h1>Un link, y el video ya es tuyo.</h1>
+      <p>Pegas el enlace de un video o de un post y te llevas el archivo: el video completo, o solo el audio en MP3. En el navegador, sin instalar nada, sin registrarte y sin la marca de agua que TikTok pega encima.</p>
+      <p>Sirve para guardar la receta que se te va a perder en el feed, quedarte con la música de un clip, archivar tus propias publicaciones o llevarte un video para verlo sin internet.</p>
       <ul class="platforms">
         <li>TikTok</li>
         <li>Instagram</li>
@@ -432,9 +549,9 @@
         <li>X (Twitter)</li>
       </ul>
       <ol class="steps">
-        <li>Pegá el enlace y lo verificamos al instante, con vista previa.</li>
-        <li>Elegí video o MP3, y hasta qué resolución querés bajarlo.</li>
-        <li>Descargalo. El archivo se borra del servidor al rato.</li>
+        <li>Pega el enlace. Se verifica al instante y te muestra qué es.</li>
+        <li>Elige video o MP3, y hasta qué resolución.</li>
+        <li>Descarga. El archivo se borra del servidor a los pocos minutos.</li>
       </ol>
     </header>
 
@@ -443,14 +560,18 @@
         <label for="url" class="visually-hidden">Enlace del video</label>
         <input id="url" type="text" inputmode="url" autocomplete="off" spellcheck="false"
                placeholder="https://www.tiktok.com/@usuario/video/...">
-        <button type="button" id="pasteBtn" class="paste-btn" aria-label="Pegar enlace copiado">
-          <svg viewBox="0 0 20 20" fill="none"><rect x="5" y="4" width="10" height="14" rx="2" stroke="currentColor" stroke-width="1.4"/><path d="M8 4V3a1 1 0 011-1h2a1 1 0 011 1v1" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/><path d="M8 10h4M8 13h4" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>
+        <button type="button" id="pasteBtn" class="paste-btn" aria-label="Pegar el enlace copiado">
+          <svg viewBox="0 0 20 20" fill="none" aria-hidden="true"><rect x="5" y="4" width="10" height="14" rx="2" stroke="currentColor" stroke-width="1.4"/><path d="M8 4V3a1 1 0 011-1h2a1 1 0 011 1v1" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/><path d="M8 10h4M8 13h4" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>
         </button>
       </div>
 
-      <span id="chip" class="chip">Esperando un enlace</span>
+      <span id="chip" class="chip" role="status">Listo para un enlace</span>
 
-      <div id="previewArea"></div>
+      <!-- role="status" acá y no en cada bloque inyectado: el contenedor es estático,
+           así que el lector de pantalla ya lo está observando cuando cambia el
+           contenido. Un role dentro de lo que se inserta se anuncia de forma menos
+           fiable, y anidar un role="alert" adentro duplicaría el aviso. -->
+      <div id="previewArea" role="status" aria-live="polite"></div>
 
       <div class="row">
         <div class="seg" role="group" aria-label="Formato">
@@ -469,11 +590,20 @@
         </select>
       </div>
 
-      <button id="go" class="btn" disabled>Descargar</button>
+      <button id="go" class="btn" aria-describedby="chip" disabled>Descargar el video</button>
 
       <div id="stage" class="stage"></div>
     </main>
   </div>
+
+  <section class="tg">
+    <div class="tg-text">
+      <h2>También vive en tu Telegram</h2>
+      <p>Mándale el link al bot y te devuelve el archivo en el chat, listo para reenviar. Sin abrir el navegador, sin salir de la conversación donde te llegó el video.</p>
+      <p class="tg-note">En Telegram el tope es de 50 MB por archivo. Para algo más pesado, la web.</p>
+    </div>
+    <a id="tgCta" class="btn" href="#" target="_blank" rel="noopener">Abrir el bot en Telegram</a>
+  </section>
 
   <div class="manual">
     <span class="manual-eyebrow">Manual</span>
@@ -482,21 +612,19 @@
       <h2>Cómo se usa</h2>
       <div class="screen">
         <div class="screen-bar" aria-hidden="true">
-          <span class="screen-dot" style="background:#FF5F57"></span>
-          <span class="screen-dot" style="background:#FEBC2E"></span>
-          <span class="screen-dot" style="background:#28C840"></span>
+          <span class="screen-dot"></span>
           <span class="screen-label">Ejemplo</span>
         </div>
         <video id="demoVideo" src="demo-dark.mp4" poster="demo-dark-poster.png"
                autoplay loop muted playsinline preload="metadata" width="848" height="786"
                aria-label="Demostración: se pega un enlace de TikTok, aparece la vista previa del video y se descarga el archivo."></video>
       </div>
-      <figcaption>Pegás el enlace, aparece la vista previa y descargás. Nada más.</figcaption>
+      <figcaption>Un enlace, la vista previa, el archivo. Eso es todo.</figcaption>
     </figure>
 
     <section class="howto">
       <h2>Cómo copiar el link en cada app</h2>
-      <p>Siempre es lo mismo: buscá <b>Compartir</b> y después <b>Copiar enlace</b>.</p>
+      <p>Siempre es lo mismo: busca <b>Compartir</b> y después <b>Copiar enlace</b>.</p>
       <div class="howto-grid">
 
         <div class="howto-card">
@@ -507,8 +635,8 @@
             <h3>TikTok</h3>
           </div>
           <ol>
-            <li>Tocá la flecha <b>Compartir</b>, a la derecha del video.</li>
-            <li>Elegí <b>Copiar enlace</b>.</li>
+            <li>Toca la flecha <b>Compartir</b>, a la derecha del video.</li>
+            <li>Elige <b>Copiar enlace</b>.</li>
           </ol>
           <code class="url-sample">https://www.tiktok.com/@usuario/video/7300000000000000000</code>
           <p class="howto-note">También sirve el link corto que da la app: <code>vm.tiktok.com/AbCdEf</code>.</p>
@@ -522,8 +650,8 @@
             <h3>Instagram</h3>
           </div>
           <ol>
-            <li>Abrí el reel o el post y tocá <b>⋯</b> (o el ícono de compartir).</li>
-            <li>Elegí <b>Copiar enlace</b>.</li>
+            <li>Abre el reel o el post y toca <b>⋯</b> (o el ícono de compartir).</li>
+            <li>Elige <b>Copiar enlace</b>.</li>
           </ol>
           <code class="url-sample">https://www.instagram.com/reel/AbCdEfGhIjK/</code>
           <p class="howto-note">Solo cuentas públicas. Si el post es un carrusel, se descargan todas las fotos y videos.</p>
@@ -537,8 +665,8 @@
             <h3>Facebook</h3>
           </div>
           <ol>
-            <li>Tocá <b>⋯</b> arriba a la derecha del video, o <b>Compartir</b>.</li>
-            <li>Elegí <b>Copiar enlace</b>.</li>
+            <li>Toca <b>⋯</b> arriba a la derecha del video, o <b>Compartir</b>.</li>
+            <li>Elige <b>Copiar enlace</b>.</li>
           </ol>
           <code class="url-sample">https://www.facebook.com/watch/?v=1234567890</code>
           <p class="howto-note">También sirve el link corto <code>fb.watch/AbCdEf</code>. Tiene que ser un video público.</p>
@@ -552,11 +680,11 @@
             <h3>YouTube</h3>
           </div>
           <ol>
-            <li>Tocá <b>Compartir</b>, debajo del video.</li>
-            <li>Elegí <b>Copiar vínculo</b>.</li>
+            <li>Toca <b>Compartir</b>, debajo del video.</li>
+            <li>Elige <b>Copiar vínculo</b>.</li>
           </ol>
           <code class="url-sample">https://youtu.be/dQw4w9WgXcQ</code>
-          <p class="howto-note">Sirven los Shorts y también el link que copiás de la barra del navegador.</p>
+          <p class="howto-note">Sirven los Shorts y también el link que copias de la barra del navegador.</p>
         </div>
 
         <div class="howto-card">
@@ -567,8 +695,8 @@
             <h3>X (Twitter)</h3>
           </div>
           <ol>
-            <li>Tocá el ícono de <b>compartir</b> del post con el video.</li>
-            <li>Elegí <b>Copiar enlace</b>.</li>
+            <li>Toca el ícono de <b>compartir</b> del post con el video.</li>
+            <li>Elige <b>Copiar enlace</b>.</li>
           </ol>
           <code class="url-sample">https://x.com/usuario/status/1234567890123456789</code>
           <p class="howto-note">Los links viejos de <code>twitter.com</code> funcionan igual.</p>
@@ -582,10 +710,10 @@
             <h3>Ya lo copiaste</h3>
           </div>
           <ol>
-            <li>Volvé acá y tocá el botón <b>pegar</b> del campo de arriba.</li>
+            <li>Vuelve aquí y toca el botón <b>pegar</b> del campo de arriba.</li>
             <li>Se verifica solo: si el link sirve, aparece la vista previa.</li>
           </ol>
-          <p class="howto-note">Si el navegador no deja pegar con el botón, mantené presionado el campo y elegí “Pegar”.</p>
+          <p class="howto-note">Si el navegador no deja pegar con el botón, mantén presionado el campo y elige “Pegar”.</p>
         </div>
 
       </div>
@@ -593,15 +721,24 @@
   </div>
 
   <section class="features">
-    <h2>Ventajas frente a las apps</h2>
+    <h2>Por qué aquí y no en cualquier otro sitio</h2>
     <ul class="feature-list">
       <li>
         <span class="feature-icon" aria-hidden="true">
           <svg viewBox="0 0 20 20" fill="none"><path d="M10 2.5l6 2.2v4.3c0 4-2.6 6.9-6 8.5-3.4-1.6-6-4.5-6-8.5V4.7l6-2.2z" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/><path d="M7 10l2 2 4-4.2" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
         </span>
         <span class="feature-text">
+          <strong>Sin anuncios ni botones falsos</strong>
+          <span>No hay publicidad, ni redirecciones, ni un “descargar” que abre otra cosa. Un botón, y hace lo que dice.</span>
+        </span>
+      </li>
+      <li>
+        <span class="feature-icon" aria-hidden="true">
+          <svg viewBox="0 0 20 20" fill="none"><rect x="2.5" y="4" width="15" height="12" rx="2.5" stroke="currentColor" stroke-width="1.4"/><rect x="10.5" y="11" width="5" height="3" rx="1" stroke="currentColor" stroke-width="1.3"/><path d="M4 16.5L16.5 4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+        </span>
+        <span class="feature-text">
           <strong>Sin marca de agua</strong>
-          <span>TikTok superpone tu usuario sobre el video al guardarlo desde la app; acá llega el archivo original.</span>
+          <span>TikTok te superpone tu usuario sobre el video al guardarlo desde la app. Acá llega el archivo original.</span>
         </span>
       </li>
       <li>
@@ -609,8 +746,8 @@
           <svg viewBox="0 0 20 20" fill="none"><path d="M4 7h9M13 7l-2.5-2.5M13 7l-2.5 2.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/><path d="M16 13H7M7 13l2.5-2.5M7 13l2.5 2.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
         </span>
         <span class="feature-text">
-          <strong>Video o solo audio</strong>
-          <span>Extraé el MP3 directo, sin instalar un conversor aparte.</span>
+          <strong>Video o solo el audio</strong>
+          <span>El MP3 sale directo, sin instalar un conversor aparte.</span>
         </span>
       </li>
       <li>
@@ -618,8 +755,17 @@
           <svg viewBox="0 0 20 20" fill="none"><path d="M12 3h5v5M8 17H3v-5M17 3l-6 6M3 17l6-6" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
         </span>
         <span class="feature-text">
-          <strong>La resolución la elegís vos</strong>
-          <span>Hasta 4K, no lo que decida la app por vos.</span>
+          <strong>La resolución la eliges tú</strong>
+          <span>Hasta 4K, no lo que decida la app.</span>
+        </span>
+      </li>
+      <li>
+        <span class="feature-icon" aria-hidden="true">
+          <svg viewBox="0 0 20 20" fill="none"><rect x="5" y="5" width="11" height="11" rx="1.5" stroke="currentColor" stroke-width="1.4"/><path d="M3 12.5V4.5A1.5 1.5 0 014.5 3h8" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>
+        </span>
+        <span class="feature-text">
+          <strong>Carruseles completos</strong>
+          <span>En un post de Instagram con varias fotos o videos se descargan todos, no solo el primero.</span>
         </span>
       </li>
       <li>
@@ -631,36 +777,19 @@
           <span>Funciona desde cualquier navegador, sin instalar nada ni iniciar sesión.</span>
         </span>
       </li>
-      <li>
-        <span class="feature-icon" aria-hidden="true">
-          <svg viewBox="0 0 20 20" fill="none"><rect x="2.5" y="2.5" width="6" height="6" rx="1.5" stroke="currentColor" stroke-width="1.4"/><rect x="11.5" y="2.5" width="6" height="6" rx="1.5" stroke="currentColor" stroke-width="1.4"/><rect x="2.5" y="11.5" width="6" height="6" rx="1.5" stroke="currentColor" stroke-width="1.4"/><rect x="11.5" y="11.5" width="6" height="6" rx="1.5" stroke="currentColor" stroke-width="1.4"/></svg>
-        </span>
-        <span class="feature-text">
-          <strong>Un solo lugar para cinco plataformas</strong>
-          <span>TikTok, Instagram, Facebook, YouTube y X, sin cambiar de app.</span>
-        </span>
-      </li>
-      <li>
-        <span class="feature-icon" aria-hidden="true">
-          <svg viewBox="0 0 20 20" fill="none"><rect x="5" y="5" width="11" height="11" rx="1.5" stroke="currentColor" stroke-width="1.4"/><path d="M3 12.5V4.5A1.5 1.5 0 014.5 3h8" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>
-        </span>
-        <span class="feature-text">
-          <strong>Carruseles completos</strong>
-          <span>En posts de Instagram con varias fotos o videos, se descargan todos, no solo el primero.</span>
-        </span>
-      </li>
     </ul>
   </section>
 
   <footer>
-    Los archivos se generan bajo demanda y se borran del servidor pasado un rato.
+    Los archivos se generan cuando los pides y se borran del servidor a los pocos minutos.
+    No hay anuncios, no hay rastreo y no hay cuentas: no guardamos nada tuyo.
     Uso personal. Respeta los derechos de quien publicó el contenido.
     <div class="creators">
       <a id="botLink" class="creator-link" href="#" target="_blank" rel="noopener">
         <span class="creator-avatar">
           <img src="bot-avatar.jpg" alt="">
           <span class="badge" aria-hidden="true">
-            <svg viewBox="0 0 20 20" fill="none"><path d="M17 3.5L2.5 9.3c-.9.36-.9 1.6.02 1.9l3.5 1.15 1.35 4.35c.2.62.98.8 1.44.34l2-2 3.9 2.87c.66.48 1.6.12 1.76-.68l2.4-12.1c.18-.9-.72-1.6-1.57-1.24z" fill="#fff"/></svg>
+            <svg viewBox="0 0 20 20" fill="none"><path d="M17 3.5L2.5 9.3c-.9.36-.9 1.6.02 1.9l3.5 1.15 1.35 4.35c.2.62.98.8 1.44.34l2-2 3.9 2.87c.66.48 1.6.12 1.76-.68l2.4-12.1c.18-.9-.72-1.6-1.57-1.24z" fill="currentColor"/></svg>
           </span>
         </span>
         <span class="creator-label">Abrir en Telegram</span>
@@ -669,7 +798,7 @@
         <span class="creator-avatar">
           <img src="owner-avatar.jpg" alt="">
           <span class="badge" aria-hidden="true">
-            <svg viewBox="0 0 20 20" fill="none"><path d="M17 3.5L2.5 9.3c-.9.36-.9 1.6.02 1.9l3.5 1.15 1.35 4.35c.2.62.98.8 1.44.34l2-2 3.9 2.87c.66.48 1.6.12 1.76-.68l2.4-12.1c.18-.9-.72-1.6-1.57-1.24z" fill="#fff"/></svg>
+            <svg viewBox="0 0 20 20" fill="none"><path d="M17 3.5L2.5 9.3c-.9.36-.9 1.6.02 1.9l3.5 1.15 1.35 4.35c.2.62.98.8 1.44.34l2-2 3.9 2.87c.66.48 1.6.12 1.76-.68l2.4-12.1c.18-.9-.72-1.6-1.57-1.24z" fill="currentColor"/></svg>
           </span>
         </span>
         <span class="creator-label">Autor</span>
@@ -683,6 +812,8 @@
 
   var API_BASE = "https://telegram-downloader-api-bir3.onrender.com";
   var PREVIEW_DEBOUNCE_MS = 600;
+  // Render free duerme el servicio tras un rato sin uso; despertarlo tarda ~50 s.
+  var SLOW_NOTICE_MS = 8000;
 
   // Enlaces de contacto del footer — username del bot y del autor en Telegram.
   var TELEGRAM_BOT_USERNAME = "mi_videito_bot";
@@ -699,12 +830,14 @@
   var kindAudio = document.getElementById("kind-audio");
   var botLink = document.getElementById("botLink");
   var ownerLink = document.getElementById("ownerLink");
+  var tgCta = document.getElementById("tgCta");
   var themeSelect = document.getElementById("themeSelect");
 
   botLink.href = "https://t.me/" + TELEGRAM_BOT_USERNAME;
   botLink.querySelector(".creator-label").textContent = "@" + TELEGRAM_BOT_USERNAME;
   ownerLink.href = "https://t.me/" + TELEGRAM_OWNER_USERNAME;
   ownerLink.querySelector(".creator-label").textContent = "@" + TELEGRAM_OWNER_USERNAME;
+  tgCta.href = "https://t.me/" + TELEGRAM_BOT_USERNAME;
 
   // ---------- Tema: claro / oscuro / sistema, persistido en localStorage ----------
   var THEME_KEY = "downloader-theme";
@@ -744,22 +877,31 @@
     try { localStorage.setItem(THEME_KEY, v); } catch (e) {}
   });
 
-  var SUPPORTED_DOMAINS = [
-    "tiktok.com", "vm.tiktok.com", "instagram.com", "instagr.am",
-    "facebook.com", "fb.watch", "youtu.be", "youtube.com",
-    "twitter.com", "x.com", "t.co",
-  ];
+  // Dominio → nombre de la plataforma. El chip nombra la que reconoció ("Enlace de
+  // TikTok") en vez de un genérico: confirma que entendió el link concreto que pegaste,
+  // no solo que la cadena parece una URL.
+  var SUPPORTED_DOMAINS = {
+    "tiktok.com": "TikTok", "vm.tiktok.com": "TikTok",
+    "instagram.com": "Instagram", "instagr.am": "Instagram",
+    "facebook.com": "Facebook", "fb.watch": "Facebook",
+    "youtu.be": "YouTube", "youtube.com": "YouTube",
+    "twitter.com": "X", "x.com": "X", "t.co": "X",
+  };
 
-  function isSupported(text) {
+  /** Nombre de la plataforma del enlace, o null si no está soportado. */
+  function platformOf(text) {
     var t = (text || "").trim();
-    if (!t) return false;
+    if (!t) return null;
     var host;
     try {
       var u = new URL(t);
-      if (u.protocol !== "http:" && u.protocol !== "https:") return false;
+      if (u.protocol !== "http:" && u.protocol !== "https:") return null;
       host = u.hostname.toLowerCase().replace(/^www\./, "");
-    } catch (e) { return false; }
-    return SUPPORTED_DOMAINS.some(function (d) { return host === d || host.endsWith("." + d); });
+    } catch (e) { return null; }
+    for (var d in SUPPORTED_DOMAINS) {
+      if (host === d || host.endsWith("." + d)) return SUPPORTED_DOMAINS[d];
+    }
+    return null;
   }
 
   function fmtDuration(sec) {
@@ -815,7 +957,31 @@
   var running = false;
   var currentSource = null;
   var jobDone = false; // true una vez que hay un resultado listo: "Descargar" se esconde,
-                        // "Guardar archivo" ya es la única acción — mostrar los dos a la vez confunde.
+                        // "Guardar el archivo" ya es la única acción — mostrar los dos confunde.
+
+  // ---------- Aviso de servidor dormido ----------
+  // El plan free de Render apaga el contenedor tras un rato sin tráfico y el primer
+  // pedido paga el arranque en frío (~50 s). Sin esto lo único visible es una barra
+  // indeterminada, que a los 30 s ya se lee como "se colgó".
+  var slowTimer = null;
+
+  function armSlowNotice(container) {
+    clearSlowNotice();
+    slowTimer = setTimeout(function () {
+      if (container.querySelector(".slow-note")) return;
+      var p = document.createElement("p");
+      p.className = "slow-note";
+      p.textContent = "Está tardando más de lo normal. El servidor se duerme cuando no se " +
+                      "usa y despertarlo lleva hasta un minuto.";
+      container.appendChild(p);
+    }, SLOW_NOTICE_MS);
+  }
+
+  function clearSlowNotice() {
+    if (slowTimer) { clearTimeout(slowTimer); slowTimer = null; }
+    var existing = document.querySelector(".slow-note");
+    if (existing) existing.remove();
+  }
 
   // ---------- Previsualización: verifica el link y muestra foto+título antes de dejar
   // descargar. Se dispara con debounce al escribir; un contador de secuencia descarta
@@ -830,6 +996,8 @@
     kindVideo.setAttribute("aria-pressed", String(k === "video"));
     kindAudio.classList.toggle("active", k === "audio");
     kindAudio.setAttribute("aria-pressed", String(k === "audio"));
+    // El botón nombra lo que va a pasar, no una acción genérica.
+    go.textContent = k === "audio" ? "Descargar el MP3" : "Descargar el video";
   }
   kindVideo.addEventListener("click", function () { setKind("video"); });
   kindAudio.addEventListener("click", function () { setKind("audio"); });
@@ -846,6 +1014,7 @@
     previewSeq++;
     previewReady = false;
     jobDone = false; // link nuevo: si había un resultado mostrado, vuelve a mostrarse "Descargar"
+    clearSlowNotice();
     previewArea.innerHTML = "";
     stage.innerHTML = ""; // no dejar el resultado/error de un link anterior colgando debajo
     updateGoState();
@@ -853,10 +1022,11 @@
 
   function showChecking() {
     previewArea.innerHTML =
-      '<div class="preview-checking"><span class="dot"></span><span>Verificando enlace...</span></div>';
+      '<div class="preview-checking"><span class="dot"></span><span>Verificando el enlace</span></div>';
   }
 
   function showPreviewError(text) {
+    clearSlowNotice();
     previewArea.innerHTML = '<div class="err"></div>';
     previewArea.querySelector(".err").textContent = text;
   }
@@ -868,7 +1038,7 @@
     ];
     var sub = parts.filter(function (p) { return p; }).join(" · ");
     var thumbHtml = data.thumbnail
-      ? '<img src="' + data.thumbnail + '" alt="">' +
+      ? '<img src="' + escapeHtml(String(data.thumbnail)) + '" alt="">' +
         (!data.is_playlist && data.duration ? '<span class="dur">' + fmtDuration(data.duration) + '</span>' : '')
       : "";
     previewArea.innerHTML =
@@ -893,6 +1063,7 @@
     previewReady = false;
     updateGoState();
     showChecking();
+    armSlowNotice(previewArea);
 
     var resp;
     try {
@@ -903,14 +1074,15 @@
       });
     } catch (e) {
       if (seq !== previewSeq) return;
-      showPreviewError("No pude conectar con el servidor. Intenta de nuevo en un momento.");
+      showPreviewError("No pude conectar con el servidor. Prueba de nuevo en un minuto.");
       return;
     }
     if (seq !== previewSeq) return; // el usuario ya cambió el link: esta respuesta no aplica
+    clearSlowNotice();
 
     if (!resp.ok) {
       var errData = await resp.json().catch(function () { return {}; });
-      showPreviewError(errData.detail || "No pude verificar ese enlace.");
+      showPreviewError(errData.detail || "No pude leer ese enlace. Revisa que el post sea público.");
       return;
     }
 
@@ -924,10 +1096,11 @@
   function scheduleVerification() {
     if (previewTimer) clearTimeout(previewTimer);
     var url = input.value.trim();
-    if (!isSupported(url)) { clearPreview(); return; }
+    if (!platformOf(url)) { clearPreview(); return; }
     previewSeq++; // invalida cualquier verificación anterior en vuelo mientras se espera el debounce
     previewReady = false;
     jobDone = false; // link nuevo: si había un resultado mostrado, vuelve a mostrarse "Descargar"
+    clearSlowNotice();
     previewArea.innerHTML = "";
     stage.innerHTML = ""; // no dejar el resultado/error de un link anterior colgando debajo
     updateGoState();
@@ -940,15 +1113,15 @@
   }
 
   function sync() {
-    var ok = isSupported(input.value);
+    var platform = platformOf(input.value);
     if (!input.value.trim()) {
-      chip.textContent = "Esperando un enlace";
+      chip.textContent = "Listo para un enlace";
       chip.className = "chip";
-    } else if (ok) {
-      chip.textContent = "Enlace reconocido";
+    } else if (platform) {
+      chip.textContent = "Enlace de " + platform;
       chip.className = "chip match";
     } else {
-      chip.textContent = "No reconozco ese enlace";
+      chip.textContent = "Solo TikTok, Instagram, Facebook, YouTube y X";
       chip.className = "chip bad";
     }
     scheduleVerification();
@@ -970,8 +1143,9 @@
 
   function showProgress(text) {
     stage.innerHTML =
-      '<div class="prog"><span class="prog-text" id="prog-text"></span>' +
-      '<div class="track"><div class="fill"></div></div></div>';
+      '<div class="prog" role="status" aria-live="polite">' +
+      '<span class="prog-text" id="prog-text"></span>' +
+      '<div class="track" role="progressbar" aria-label="Progreso de la descarga"><div class="fill"></div></div></div>';
     document.getElementById("prog-text").textContent = text;
     spring(stage);
   }
@@ -982,29 +1156,39 @@
   }
 
   function showError(text) {
-    stage.innerHTML = '<div class="err"></div>';
+    clearSlowNotice();
+    stage.innerHTML = '<div class="err" role="alert"></div>';
     stage.querySelector(".err").textContent = text;
     spring(stage);
   }
 
   function showResult(jobId, files) {
-    jobDone = true; // "Guardar archivo" pasa a ser la única acción: se esconde "Descargar".
+    clearSlowNotice();
+    // Si el foco estaba en "Descargar" (que ahora se oculta) queda huérfano en <body>:
+    // se lo pasamos al enlace de guardar, que es la única acción que queda.
+    var moveFocus = document.activeElement === go || document.activeElement === document.body;
+    jobDone = true; // "Guardar el archivo" pasa a ser la única acción: se esconde "Descargar".
     var html = "";
     if (files <= 1) {
-      html = '<a class="btn" href="' + API_BASE + "/jobs/" + jobId + '/file" download>Guardar archivo</a>';
+      html = '<a class="btn" href="' + API_BASE + "/jobs/" + jobId + '/file" download>Guardar el archivo</a>';
     } else {
-      html = '<span class="n">' + files + " elementos listos:</span>";
+      html = '<span class="n">El post tiene ' + files + " elementos</span>";
       for (var i = 0; i < files; i++) {
         html += '<a class="btn ghost" style="margin-top:.5rem" href="' + API_BASE + "/jobs/" + jobId +
-                '/file?index=' + i + '" download>Elemento ' + (i + 1) + "</a>";
+                '/file?index=' + i + '" download>Archivo ' + (i + 1) + "</a>";
       }
     }
     stage.innerHTML = '<div class="result">' + html + '</div>';
     spring(stage);
+    if (moveFocus) {
+      var first = stage.querySelector("a.btn");
+      if (first) first.focus();
+    }
   }
 
   function finish() {
     running = false;
+    clearSlowNotice();
     if (currentSource) { currentSource.close(); currentSource = null; }
     updateGoState();
   }
@@ -1014,7 +1198,8 @@
     if (running) return;
     running = true;
     go.disabled = true;
-    showProgress("Enviando...");
+    showProgress("Empezando");
+    armSlowNotice(stage);
 
     var body = { url: input.value.trim(), kind: kind, resolution: parseInt(resolutionSel.value, 10) };
 
@@ -1026,20 +1211,21 @@
         body: JSON.stringify(body),
       });
     } catch (e) {
-      showError("No pude conectar con el servidor. Intenta de nuevo en un momento.");
+      showError("No pude conectar con el servidor. Prueba de nuevo en un minuto.");
       finish();
       return;
     }
+    clearSlowNotice();
 
     if (resp.status === 429) {
       var data = await resp.json().catch(function () { return {}; });
-      showError(data.detail || "Vas muy rápido. Espera un momento antes de intentar de nuevo.");
+      showError(data.detail || "Demasiados pedidos seguidos. Espera unos segundos y vuelve a intentar.");
       finish();
       return;
     }
     if (!resp.ok) {
       var errData = await resp.json().catch(function () { return {}; });
-      showError(errData.detail || "No pude procesar ese enlace.");
+      showError(errData.detail || "No pude descargar ese contenido.");
       finish();
       return;
     }
@@ -1059,6 +1245,9 @@
       if (data.type === "status") {
         updateProgress(data.text);
       } else if (data.type === "ready") {
+        // El archivo ya existe pero todavía falta preguntar cuántos elementos son:
+        // sin este texto la barra se queda con la última fase del server.
+        updateProgress("Preparando el archivo");
         fetch(API_BASE + "/jobs/" + jobId)
           .then(function (r) { return r.json(); })
           .then(function (info) { showResult(jobId, info.files || 1); })
@@ -1075,7 +1264,7 @@
       // vencido) lo dejamos morir tras un rato en vez de reintentar para siempre.
       setTimeout(function () {
         if (currentSource === source && running) {
-          showError("Se perdió la conexión con el servidor. Intenta de nuevo.");
+          showError("Se cortó la conexión con el servidor. Vuelve a intentar.");
           finish();
         }
       }, 15000);
@@ -1085,6 +1274,7 @@
   go.addEventListener("click", function () { if (!running) start(); });
   input.addEventListener("keydown", function (e) { if (e.key === "Enter" && !go.disabled) start(); });
 
+  setKind(kind);
   sync();
 })();
 </script>
