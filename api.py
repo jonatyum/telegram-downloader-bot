@@ -26,7 +26,7 @@ from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel, field_validator
 
 from config import DOWNLOAD_DIR, MAX_COMPRESS_HEIGHT, MAX_CONCURRENT_DOWNLOADS, MAX_VIDEO_HEIGHT
-from downloader import fetch_thumbnail, get_video_info
+from downloader import check_youtube_config, fetch_thumbnail, get_video_info
 from links import is_supported_url
 from pipeline import DeliveryLimits, Pipeline, download_error_message
 from rate_limiter import RateLimiter
@@ -262,6 +262,9 @@ class CreateJobBody(BaseModel):
 
 
 async def _lifespan(app: FastAPI):
+    # Mismo motivo que en bot.py: los fallos de configuración de YouTube son silenciosos
+    # y solo se manifiestan en la primera descarga, disfrazados de bloqueo de YouTube.
+    check_youtube_config()
     os.makedirs(RESULTS_DIR, exist_ok=True)
     sweep_task = asyncio.create_task(_sweep_loop())
     try:
