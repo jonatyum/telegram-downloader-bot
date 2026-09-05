@@ -51,6 +51,14 @@ services:
       # cargalo en el dashboard cuando tengas uno, no en el repo (lleva credenciales).
       - key: YOUTUBE_PROXY
         sync: false
+      # Worker remoto en una conexión residencial (worker.py detrás de un túnel).
+      # Es lo único que resuelve el bloqueo de YouTube sin cookies ni proxy pago.
+      # Vacío = sin worker; si está configurado pero no responde, el servicio sigue
+      # resolviendo en local, así que apagar esa máquina no rompe nada.
+      - key: YOUTUBE_WORKER_URL
+        sync: false
+      - key: YOUTUBE_WORKER_TOKEN
+        sync: false
   - type: web
     name: telegram-downloader-api
     runtime: docker
@@ -93,4 +101,12 @@ services:
       # que resuelve el bloqueo por reputación de IP sin cookies, pero se paga por GB:
       # cargalo en el dashboard cuando tengas uno, no en el repo (lleva credenciales).
       - key: YOUTUBE_PROXY
+        sync: false
+      # Worker remoto en una conexión residencial (worker.py detrás de un túnel).
+      # Es lo único que resuelve el bloqueo de YouTube sin cookies ni proxy pago.
+      # Vacío = sin worker; si está configurado pero no responde, el servicio sigue
+      # resolviendo en local, así que apagar esa máquina no rompe nada.
+      - key: YOUTUBE_WORKER_URL
+        sync: false
+      - key: YOUTUBE_WORKER_TOKEN
         sync: false

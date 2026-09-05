@@ -50,6 +50,29 @@ YOUTUBE_PLAYER_CLIENTS: tuple[str, ...] = tuple(
 # directo desde Render, y pasarlas por un proxy de pago sería tirar tráfico y plata.
 YOUTUBE_PROXY: str = os.getenv("YOUTUBE_PROXY", "")
 
+# --- YouTube: worker remoto en una conexión residencial ---
+# YouTube firma las URLs de los formatos con la IP que las pidió: el parámetro "ip" va
+# dentro de "sparams", o sea que está cubierto por la firma. Por eso NO alcanza con
+# resolver el link en una máquina de casa y bajar los bytes desde Render — el servidor
+# pediría el archivo con otra IP y recibiría un 403. El worker hace la descarga entera
+# y devuelve el archivo ya terminado.
+# Vacío = sin worker: cada servicio resuelve todo por su cuenta, como hasta ahora.
+YOUTUBE_WORKER_URL: str = os.getenv("YOUTUBE_WORKER_URL", "").rstrip("/")
+
+# Secreto compartido, obligatorio en la práctica: el túnel deja el worker expuesto a
+# internet y sin esto cualquiera puede usar tu conexión de casa para descargar.
+YOUTUBE_WORKER_TOKEN: str = os.getenv("YOUTUBE_WORKER_TOKEN", "")
+
+# Techo para una descarga completa a través del worker: incluye lo que tarda en bajar
+# de YouTube más lo que tarda en subirle el archivo a Render por la conexión de casa,
+# que suele ser la parte lenta.
+YOUTUBE_WORKER_TIMEOUT = _env_int("YOUTUBE_WORKER_TIMEOUT", 300)
+
+# Tras un fallo de conexión, cuánto se deja de intentar. Es lo que hace que apagar la
+# máquina no degrade el servicio: sin esto, cada link de YouTube esperaría el timeout
+# completo antes de caer al camino local.
+YOUTUBE_WORKER_COOLDOWN = _env_int("YOUTUBE_WORKER_COOLDOWN", 300)
+
 DOWNLOAD_DIR = os.path.join(os.path.dirname(__file__), "downloads")
 MAX_TELEGRAM_SIZE_BYTES = 50 * 1024 * 1024   # 50 MB — límite del Bot API para enviar como video
 # Tope para enviar como documento. En hosts con poca RAM (Render free 512 MB) hay

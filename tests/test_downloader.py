@@ -645,6 +645,129 @@ class TestYoutubeProxy:
         assert opts["proxy"] == "socks5://proxy:1080"
 
 
+class TestYoutubeWorker:
+    """
+    El worker remoto (una máquina en IP residencial) nunca puede empeorar el servicio:
+    si no contesta, se sigue por el camino local, que es lo que pasaba antes de que
+    existiera.
+    """
+
+    @staticmethod
+    def _reset():
+        TestCookiefile._reset()
+        downloader._worker_down_until = 0.0
+
+    def _worker(self, **overrides):
+        """Contexto con el worker configurado y sin cookies de por medio."""
+        cfg = {"downloader.YOUTUBE_COOKIES_FILE": "",
+               "downloader.YOUTUBE_WORKER_URL": "https://worker.ejemplo",
+               "downloader.YOUTUBE_WORKER_TOKEN": "secreto"}
+        cfg.update(overrides)
+        self._reset()
+        from contextlib import ExitStack
+        stack = ExitStack()
+        for target, value in cfg.items():
+            stack.enter_context(patch(target, value))
+        return stack
+
+    def test_disabled_without_url(self):
+        self._reset()
+        with patch("downloader.YOUTUBE_WORKER_URL", ""):
+            assert downloader._worker_enabled(True) is False
+
+    def test_only_for_youtube(self):
+        """Un TikTok baja perfecto desde el servidor: no tiene por qué pasar por casa."""
+        with self._worker():
+            assert downloader._worker_enabled(True) is True
+            assert downloader._worker_enabled(False) is False
+
+    def test_info_is_delegated(self):
+        payload = {"title": "Un video", "duration": 12, "filesize": 900}
+        with self._worker(), patch("downloader._worker_call") as call:
+            call.return_value.__enter__.return_value.read.return_value = json.dumps(payload).encode()
+            got = get_video_info("https://youtu.be/abc")
+        assert got == payload
+        assert call.call_args[0][0] == "/info"
+
+    def test_falls_back_to_local_when_the_worker_is_down(self):
+        """La máquina apagada: se extrae en local, como si no hubiera worker."""
+        cm = MagicMock()
+        ydl = MagicMock()
+        ydl.extract_info.return_value = {"title": "Local", "duration": 5}
+        cm.__enter__ = MagicMock(return_value=ydl)
+        cm.__exit__ = MagicMock(return_value=False)
+
+        with self._worker(), \
+             patch("downloader._worker_call", side_effect=OSError("connection refused")), \
+             patch("yt_dlp.YoutubeDL", return_value=cm):
+            got = get_video_info("https://youtu.be/abc")
+
+        assert got["title"] == "Local"
+
+    def test_a_failure_opens_a_cooldown(self):
+        """
+        Sin cooldown, con la máquina apagada cada link pagaría el timeout de conexión
+        antes de caer al camino local.
+        """
+        with self._worker(), patch("downloader._worker_call", side_effect=OSError("timeout")):
+            assert downloader._worker_info("/info", {}) is None
+            assert downloader._worker_enabled(True) is False
+
+    def test_worker_errors_are_propagated_not_retried_locally(self):
+        """
+        Si el worker contestó "video privado", repetirlo en local solo cambiaría el
+        motivo por el chequeo antibot del servidor. Se propaga tal cual.
+        """
+        with self._worker(), \
+             patch("downloader._worker_call", side_effect=downloader._WorkerRejected("Video privado")):
+            with pytest.raises(yt_dlp.DownloadError, match="privado"):
+                get_video_info("https://youtu.be/abc")
+            # y el worker sigue habilitado: contestó bien, el que falló fue el video
+            assert downloader._worker_enabled(True) is True
+
+    def test_download_writes_the_file_and_returns_metadata(self, tmp_path):
+        resp = MagicMock()
+        resp.__enter__ = MagicMock(return_value=resp)
+        resp.__exit__ = MagicMock(return_value=False)
+        resp.headers = {"X-Filename": "algo.mp3", "X-Meta": json.dumps({"title": "T", "artist": "A"})}
+        resp.read = MagicMock(side_effect=[b"bytes-del-audio", b""])
+
+        with self._worker(), patch("downloader.DOWNLOAD_DIR", str(tmp_path)), \
+             patch("downloader._worker_call", return_value=resp):
+            path, meta = download_audio("https://youtu.be/abc")
+
+        assert path.endswith(".mp3")
+        assert open(path, "rb").read() == b"bytes-del-audio"
+        assert meta == {"title": "T", "artist": "A"}
+
+    def test_a_cut_transfer_leaves_no_half_file(self, tmp_path):
+        """Si se corta a mitad de la subida, no puede quedar un archivo trunco en disco."""
+        resp = MagicMock()
+        resp.__enter__ = MagicMock(return_value=resp)
+        resp.__exit__ = MagicMock(return_value=False)
+        resp.headers = {"X-Filename": "algo.mp4"}
+        resp.read = MagicMock(side_effect=OSError("conexión cortada"))
+
+        cm = MagicMock()
+        ydl = MagicMock()
+        ydl.extract_info.return_value = {"title": "x"}
+        ydl.prepare_filename.return_value = str(tmp_path / "local.mp4")
+        cm.__enter__ = MagicMock(return_value=ydl)
+        cm.__exit__ = MagicMock(return_value=False)
+        (tmp_path / "local.mp4").write_bytes(b"local")
+
+        with self._worker(), patch("downloader.DOWNLOAD_DIR", str(tmp_path)), \
+             patch("downloader._worker_call", return_value=resp), \
+             patch("downloader._ensure_h264", side_effect=lambda p: p), \
+             patch("downloader._fix_stream_loop", side_effect=lambda p: p), \
+             patch("yt_dlp.YoutubeDL", return_value=cm):
+            path = download_video("https://youtu.be/abc")
+
+        # cayó a local, y no quedó ningún temporal del worker a medio escribir
+        assert path == str(tmp_path / "local.mp4")
+        assert [f for f in os.listdir(tmp_path)] == ["local.mp4"]
+
+
 class TestIsImageEntry:
     def test_instagram_photo_without_formats_is_image(self):
         entry = {"extractor_key": "Instagram", "thumbnails": [{"url": "https://cdn/p.jpg"}]}
