@@ -317,6 +317,10 @@ async def preview(body: PreviewBody, request: Request):
         "title": info.get("title"),
         "duration": info.get("duration"),
         "filesize": info.get("filesize"),
+        # Altura real del mejor formato: el frontend deshabilita con ella los escalones
+        # que este video no puede dar. None (carruseles, fotos, o un worker viejo que
+        # todavía no la manda) significa "no sé": el desplegable se deja entero.
+        "available_height": info.get("available_height"),
         "thumbnail": thumbnail,
         "is_playlist": bool(info.get("is_playlist")),
         "count": info.get("count", 1),

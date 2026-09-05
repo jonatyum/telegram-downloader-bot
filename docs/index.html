@@ -1010,6 +1010,34 @@
   }
   [go, kindVideo, kindAudio].forEach(pressFeedback);
 
+  /* El desplegable ofrece siempre los ocho escalones estándar. Tras verificar el link
+     los que el video no puede dar se deshabilitan en vez de ocultarse: así se ve cuál
+     es su techo real y la lista no cambia de tamaño al pegar el enlace. Antes se
+     ofrecía hasta 4K siempre, así que pedir 2160p en un TikTok de 1080p era una
+     opción que no significaba nada — yt-dlp caía al mejor formato y ya. */
+  function resetResolutions() {
+    for (var i = 0; i < resolutionSel.options.length; i++) {
+      resolutionSel.options[i].disabled = false;
+    }
+  }
+
+  function applyAvailableHeight(height) {
+    resetResolutions();
+    if (!height) return; // carrusel, foto, o un worker viejo que todavía no manda el dato
+    var wasSelected = resolutionSel.selectedIndex;
+    var best = -1;
+    for (var i = 0; i < resolutionSel.options.length; i++) {
+      var opt = resolutionSel.options[i];
+      opt.disabled = parseInt(opt.value, 10) > height;
+      if (!opt.disabled && best === -1) best = i; // van de mayor a menor: el primero vivo es el techo
+    }
+    // Si la opción elegida quedó deshabilitada hay que moverla: un <option disabled>
+    // sigue siendo el value del <select> y se enviaría igual al pedir la descarga.
+    if (best !== -1 && resolutionSel.options[wasSelected].disabled) {
+      resolutionSel.selectedIndex = best;
+    }
+  }
+
   function clearPreview() {
     previewSeq++;
     previewReady = false;
@@ -1017,6 +1045,7 @@
     clearSlowNotice();
     previewArea.innerHTML = "";
     stage.innerHTML = ""; // no dejar el resultado/error de un link anterior colgando debajo
+    resetResolutions();
     updateGoState();
   }
 
@@ -1035,6 +1064,7 @@
     var parts = [
       data.is_playlist ? (data.count || 0) + " elementos" : (data.duration ? fmtDuration(data.duration) : ""),
       fmtSize(data.filesize),
+      data.available_height ? "máx " + data.available_height + "p" : "",
     ];
     var sub = parts.filter(function (p) { return p; }).join(" · ");
     var thumbHtml = data.thumbnail
@@ -1049,6 +1079,7 @@
           (sub ? '<span class="preview-sub">' + escapeHtml(String(sub)) + '</span>' : '') +
         '</div>' +
       '</div>';
+    applyAvailableHeight(data.available_height);
     spring(document.getElementById("previewCard"));
   }
 
@@ -1103,6 +1134,7 @@
     clearSlowNotice();
     previewArea.innerHTML = "";
     stage.innerHTML = ""; // no dejar el resultado/error de un link anterior colgando debajo
+    resetResolutions();
     updateGoState();
     previewTimer = setTimeout(function () { runPreview(url); }, PREVIEW_DEBOUNCE_MS);
   }
