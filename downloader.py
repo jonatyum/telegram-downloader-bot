@@ -755,6 +755,31 @@ def download_post(
     return _run_with_retry(_do_download)
 
 
+def _available_height(info: dict) -> int | None:
+    """
+    Altura del mejor formato de video que la plataforma publica para este item.
+    El canal web la usa para no ofrecer resoluciones que el video no puede dar:
+    hasta ahora el desplegable listaba siempre hasta 4K, así que pedir 2160p en un
+    TikTok de 1080p era una opción que no significaba nada.
+
+    Se lee de "formats" (la lista completa que devuelve extract_info) y no del
+    formato ya seleccionado: el selector de _video_format ya vino recortado por
+    max_height, así que preguntarle a él devolvería el tope pedido, no el real.
+    """
+    formats = info.get("formats") or []
+    heights = [
+        f.get("height") for f in formats
+        # Solo se excluye el "none" explícito, que es audio: hay extractores que no
+        # ponen vcodec, y descartar por ausencia dejaba fuera formatos de video reales.
+        if f.get("height") and f.get("vcodec") != "none"
+    ]
+    if heights:
+        return max(heights)
+    # Sin lista de formatos (algunos extractores devuelven el item ya resuelto)
+    # el propio info suele traer la altura del único formato que hay.
+    return info.get("height")
+
+
 def _estimate_filesize(info: dict) -> int | None:
     # Para streams DASH (video+audio separados), suma ambos tamaños
     requested = info.get("requested_formats") or []
@@ -850,6 +875,7 @@ def get_video_info(url: str, max_height: int | None = None) -> dict:
         "title": info.get("title") or "Sin título",
         "duration": info.get("duration"),
         "filesize": _estimate_filesize(info),
+        "available_height": _available_height(info),
         "is_music": bool(info.get("track") or info.get("artist")),
         "is_playlist": False,
         "is_image": _is_image_entry(info),
