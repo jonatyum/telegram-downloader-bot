@@ -123,6 +123,57 @@ _cookies_workfile: str | None = None
 _cookies_prepared = False
 
 
+def check_youtube_config() -> list[str]:
+    """
+    Revisa la configuración de YouTube al arrancar y devuelve los problemas encontrados
+    (además de loguearlos). Nada de esto rompe el arranque: son avisos.
+
+    Existe porque todos estos fallos son SILENCIOSOS y se manifiestan igual —el chequeo
+    antibot de YouTube— mucho después, en la primera descarga de alguien. Un despliegue
+    mal configurado parecía sano hasta ese momento, y el error que salía apuntaba a
+    YouTube en vez de a la variable que faltaba.
+    """
+    problemas: list[str] = []
+    # "Usables", no "configuradas": unas cookies que apuntan a una ruta inexistente
+    # dejan a YouTube igual de desprotegido que no tener ninguna, así que no deben
+    # contar como cobertura en la última comprobación.
+    cookies_ok = bool(YOUTUBE_COOKIES_FILE) and os.path.exists(YOUTUBE_COOKIES_FILE)
+
+    if YOUTUBE_COOKIES_FILE and not cookies_ok:
+        problemas.append(
+            "YOUTUBE_COOKIES_FILE apunta a una ruta que no existe: se trabajará sin "
+            "cookies. Si no piensas usarlas, deja la variable vacía y este aviso se va."
+        )
+
+    if YOUTUBE_WORKER_URL and not YOUTUBE_WORKER_TOKEN:
+        # El worker responde 401 a todo, así que cada link de YouTube pagaría el intento
+        # y acabaría en local igual. Es el fallo más difícil de ver: el worker está
+        # levantado y contesta, solo que rechaza.
+        problemas.append(
+            "YOUTUBE_WORKER_URL está configurada pero YOUTUBE_WORKER_TOKEN está vacía: "
+            "el worker rechazará todas las peticiones con 401 y YouTube caerá siempre "
+            "al camino local."
+        )
+
+    if not YOUTUBE_WORKER_URL and not cookies_ok and not YOUTUBE_PROXY:
+        problemas.append(
+            "YouTube sin worker, sin cookies y sin proxy: desde una IP de datacenter el "
+            "chequeo antibot lo bloquea casi siempre. El resto de plataformas no se ve "
+            "afectado."
+        )
+
+    for aviso in problemas:
+        logger.warning("Configuración de YouTube: %s", aviso)
+    if not problemas:
+        logger.info(
+            "Configuración de YouTube correcta (worker: %s, cookies: %s, proxy: %s).",
+            "sí" if YOUTUBE_WORKER_URL else "no",
+            "sí" if YOUTUBE_COOKIES_FILE else "no",
+            "sí" if YOUTUBE_PROXY else "no",
+        )
+    return problemas
+
+
 def _cookiefile() -> str | None:
     """Ruta a la copia escribible del cookies.txt, o None si no hay cookies configuradas."""
     global _cookies_workfile, _cookies_prepared

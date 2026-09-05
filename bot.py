@@ -9,7 +9,7 @@ from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, Cal
 
 from config import BOT_TOKEN, MAX_TELEGRAM_SIZE_BYTES, MAX_PREFLIGHT_SIZE_BYTES, MAX_CONCURRENT_DOWNLOADS, ADMIN_CHAT_ID, HEALTH_PORT, MAX_VIDEO_HEIGHT, MAX_COMPRESS_HEIGHT, WEBHOOK_URL, WEBHOOK_SECRET, PORT, NOTIFY_ON_START, WEB_URL
 from database import init_db, upsert_user, get_all_users, get_stats, get_user_max_resolution, set_user_max_resolution, clear_user_max_resolution
-from downloader import get_video_info, get_audio_info
+from downloader import check_youtube_config, get_video_info, get_audio_info
 from links import extract_urls, is_supported_url, is_youtube_url
 from pipeline import DeliveryLimits, Pipeline, download_error_message
 from rate_limiter import rate_limiter
@@ -581,6 +581,9 @@ async def handle_song_download(update: Update, context: ContextTypes.DEFAULT_TYP
 def main() -> None:
     if not BOT_TOKEN:
         raise RuntimeError("BOT_TOKEN no está configurada")
+    # Avisos, no errores: una config de YouTube incompleta no impide arrancar, pero
+    # verla acá evita descubrirla como un falso "bloqueo de YouTube" horas después.
+    check_youtube_config()
     init_db()
 
     app = ApplicationBuilder().token(BOT_TOKEN).post_init(post_init).build()
