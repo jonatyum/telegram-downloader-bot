@@ -31,6 +31,16 @@ from links import is_supported_url
 from pipeline import DeliveryLimits, Pipeline, download_error_message
 from rate_limiter import RateLimiter
 
+# Uvicorn configura sus propios loggers, no el raíz, así que sin esto los mensajes de
+# la aplicación (downloader, pipeline) caen al handler de último recurso de Python, que
+# descarta todo lo que no llegue a WARNING. Es decir: el detalle del camino de YouTube
+# —tiempos del worker, cooldown, transferencia— no aparecía en los logs de este
+# servicio. LOG_LEVEL permite subir a DEBUG sin tocar código.
+logging.basicConfig(
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    level=os.getenv("LOG_LEVEL", "INFO").upper(),
+)
+
 logger = logging.getLogger(__name__)
 
 # Origen(es) desde donde se sirve el frontend (GitHub Pages). "*" por defecto: es una

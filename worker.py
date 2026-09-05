@@ -24,6 +24,7 @@ import json
 import logging
 import os
 import secrets
+import time
 
 import yt_dlp
 from fastapi import FastAPI, Header, HTTPException
@@ -73,13 +74,22 @@ async def _run(fn, *args):
     llama en el thread pool para no bloquear el loop.
     """
     loop = asyncio.get_running_loop()
+    started = time.monotonic()
+    # getattr con respaldo: en los tests `fn` es un mock, y los mocks no tienen __name__.
+    nombre = getattr(fn, "__name__", type(fn).__name__)
+    logger.info("→ %s: empieza", nombre)
     try:
-        return await loop.run_in_executor(None, fn, *args)
+        result = await loop.run_in_executor(None, fn, *args)
     except yt_dlp.DownloadError as e:
+        # Este log es el que dice si YouTube bloquea la conexión DEL WORKER. Si aparece,
+        # el problema no es el transporte y no lo arregla tocar el túnel.
+        logger.warning("✗ %s: yt-dlp falló tras %.1fs — %s", nombre, time.monotonic() - started, e)
         # 422 es el código que el cliente interpreta como "el worker anduvo, yt-dlp
         # falló": lo propaga tal cual en vez de reintentar en local, para no cambiar
         # "video privado" por el chequeo antibot del servidor.
         raise HTTPException(422, str(e)) from e
+    logger.info("✓ %s: terminó en %.1fs", nombre, time.monotonic() - started)
+    return result
 
 
 def _file_response(path: str, meta: dict | None = None) -> FileResponse:
@@ -91,6 +101,9 @@ def _file_response(path: str, meta: dict | None = None) -> FileResponse:
     headers = {"X-Filename": os.path.basename(path)}
     if meta is not None:
         headers["X-Meta"] = _json_header(meta)
+    # Si esta línea sale y del otro lado nunca llega el archivo, la descarga terminó
+    # bien y lo que falló fue el transporte (túnel o subida), no el worker.
+    logger.info("↑ Enviando %.1f MB al servidor", os.path.getsize(path) / 1024 / 1024)
     return FileResponse(
         path,
         filename=os.path.basename(path),
