@@ -42,7 +42,7 @@ class TestDownloadPost:
         )
 
         with patch("downloader.DOWNLOAD_DIR", str(tmp_path)), \
-             patch("downloader._ensure_h264", side_effect=lambda p: p), \
+             patch("downloader._ensure_h264", side_effect=lambda p, cap=None: p), \
              patch("downloader._download_image", return_value=image_path), \
              patch("yt_dlp.YoutubeDL", return_value=_cm(ydl)):
             return download_post("https://www.instagram.com/p/abc/"), ydl
@@ -115,7 +115,7 @@ class TestDownloadPost:
              patch("yt_dlp.YoutubeDL", return_value=_cm(ydl)):
             items = download_post("https://www.instagram.com/p/abc/")
 
-        mock_h264.assert_called_once_with(str(vid))
+        mock_h264.assert_called_once_with(str(vid), None)
         assert items[0]["path"] == str(converted)
 
     @staticmethod
@@ -270,7 +270,9 @@ class TestDownloadVideo:
         assert captured_opts["retries"] == 3
         assert "max_filesize" in captured_opts
         assert "progress_hooks" in captured_opts
-        assert str(MAX_VIDEO_HEIGHT) in captured_opts["format"]
+        # El tope de resolución vive en format_sort ("res:1080"), no en el selector:
+        # un filtro [height<=N] se rompe en vertical (ver _format_sort).
+        assert f"res:{MAX_VIDEO_HEIGHT}" in captured_opts["format_sort"]
 
     def test_progress_callback_called_on_download(self, tmp_path):
         fake_file = tmp_path / "video.mp4"
@@ -758,7 +760,7 @@ class TestYoutubeWorker:
 
         with self._worker(), patch("downloader.DOWNLOAD_DIR", str(tmp_path)), \
              patch("downloader._worker_call", return_value=resp), \
-             patch("downloader._ensure_h264", side_effect=lambda p: p), \
+             patch("downloader._ensure_h264", side_effect=lambda p, cap=None: p), \
              patch("downloader._fix_stream_loop", side_effect=lambda p: p), \
              patch("yt_dlp.YoutubeDL", return_value=cm):
             path = download_video("https://youtu.be/abc")

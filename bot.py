@@ -7,9 +7,9 @@ import yt_dlp
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, BotCommand, BotCommandScopeDefault, BotCommandScopeChat, InputMediaPhoto, InputMediaVideo
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, CallbackQueryHandler, ContextTypes, filters
 
-from config import BOT_TOKEN, MAX_TELEGRAM_SIZE_BYTES, MAX_PREFLIGHT_SIZE_BYTES, MAX_CONCURRENT_DOWNLOADS, ADMIN_CHAT_ID, HEALTH_PORT, MAX_VIDEO_HEIGHT, MAX_COMPRESS_HEIGHT, WEBHOOK_URL, WEBHOOK_SECRET, PORT, NOTIFY_ON_START, WEB_URL
+from config import BOT_TOKEN, MAX_TELEGRAM_SIZE_BYTES, MAX_PREFLIGHT_SIZE_BYTES, MAX_CONCURRENT_DOWNLOADS, ADMIN_CHAT_ID, HEALTH_PORT, MAX_VIDEO_HEIGHT, MAX_COMPRESS_HEIGHT, BEST_QUALITY_HEIGHT, WEBHOOK_URL, WEBHOOK_SECRET, PORT, NOTIFY_ON_START, WEB_URL
 from database import init_db, upsert_user, get_all_users, get_stats, get_user_max_resolution, set_user_max_resolution, clear_user_max_resolution
-from downloader import check_youtube_config, get_video_info, get_audio_info
+from downloader import check_youtube_config, get_video_info, get_audio_info, VideoConversionError
 from links import extract_urls, is_supported_url, is_youtube_url
 from pipeline import DeliveryLimits, Pipeline, download_error_message
 from rate_limiter import rate_limiter
@@ -142,6 +142,36 @@ async def _health_handler(reader: asyncio.StreamReader, writer: asyncio.StreamWr
 _RESOLUTION_OPTIONS = [360, 480, 720, 1080]
 
 
+def _is_best_quality(user_pref: int | None) -> bool:
+    """
+    True si el usuario eligió "máxima calidad". Se guarda como BEST_QUALITY_HEIGHT en
+    la misma columna que la resolución: el bot solo ofrece hasta 1080p, así que el
+    valor no choca con ninguna opción real y evitó una columna nueva en la BD.
+    """
+    return user_pref == BEST_QUALITY_HEIGHT
+
+
+def _quality_display(current: int | None) -> str:
+    if _is_best_quality(current):
+        return "Máxima calidad"
+    return f"{current}p" if current else f"Por defecto ({MAX_VIDEO_HEIGHT}p)"
+
+
+def _conversion_error_message(best_quality: bool) -> str:
+    """
+    Qué decirle al usuario cuando el video bajó pero no se pudo convertir. Suele ser el
+    recode quedándose sin memoria, y en modo máxima calidad es lo esperable: ahí se baja
+    a propósito el formato que hay que convertir.
+    """
+    extra = (
+        "\n\nTienes activada 🔝 Máxima calidad, que obliga a convertir. Si pones 1080p "
+        "o menos en /settings, casi todo baja ya listo y no hace falta."
+        if best_quality else ""
+    )
+    return ("😵 Bajé el video pero no pude dejarlo en un formato que Telegram reproduzca, "
+            "así que prefiero no mandártelo roto." + extra)
+
+
 def _resolution_keyboard(current: int | None) -> InlineKeyboardMarkup:
     rows = []
     for i in range(0, len(_RESOLUTION_OPTIONS), 2):
@@ -150,6 +180,8 @@ def _resolution_keyboard(current: int | None) -> InlineKeyboardMarkup:
             label = f"✅ {r}p" if r == current else f"{r}p"
             row.append(InlineKeyboardButton(label, callback_data=f"settings:res:{r}"))
         rows.append(row)
+    best_label = "✅ 🔝 Máxima calidad" if _is_best_quality(current) else "🔝 Máxima calidad"
+    rows.append([InlineKeyboardButton(best_label, callback_data="settings:res:best")])
     default_label = "✅ Por defecto" if current is None else "Por defecto"
     rows.append([InlineKeyboardButton(default_label, callback_data="settings:res:default")])
     return InlineKeyboardMarkup(rows)
@@ -268,11 +300,14 @@ def admin_only(func):
 async def cmd_settings(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user = update.effective_user
     current = get_user_max_resolution(user.id)
-    display = f"{current}p" if current else f"Por defecto ({MAX_VIDEO_HEIGHT}p)"
+    display = _quality_display(current)
     await update.message.reply_text(
         f"⚙️ *Resolución máxima*\n\nAhora mismo: *{display}*\n\n"
         "Bajo la mejor calidad disponible hasta ese tope. Menos resolución = "
-        "archivo más liviano y descarga más rápida.",
+        "archivo más liviano y descarga más rápida.\n\n"
+        "🔝 *Máxima calidad* baja el mejor formato que haya aunque venga en un códec "
+        "que Telegram no reproduce (el 1080p de TikTok, por ejemplo): lo convierto yo. "
+        "Tarda bastante más y con videos largos puede fallar.",
         reply_markup=_resolution_keyboard(current),
         parse_mode="Markdown",
     )
@@ -287,6 +322,9 @@ async def handle_settings_choice(update: Update, context: ContextTypes.DEFAULT_T
     if value == "default":
         clear_user_max_resolution(user.id)
         current = None
+    elif value == "best":
+        set_user_max_resolution(user.id, BEST_QUALITY_HEIGHT)
+        current = BEST_QUALITY_HEIGHT
     else:
         try:
             height = int(value)
@@ -299,7 +337,7 @@ async def handle_settings_choice(update: Update, context: ContextTypes.DEFAULT_T
         set_user_max_resolution(user.id, height)
         current = height
 
-    display = f"{current}p" if current else f"Por defecto ({MAX_VIDEO_HEIGHT}p)"
+    display = _quality_display(current)
     await query.edit_message_text(
         f"⚙️ *Configuración*\n\nResolución máxima: *{display}* ✅\n\nSelecciona la resolución máxima para tus descargas:",
         reply_markup=_resolution_keyboard(current),
@@ -435,16 +473,21 @@ async def _process_url(update: Update, url: str, user_pref: int | None, allow_fo
     user = update.effective_user
     status_msg = await update.message.reply_text("🔍 Verificando el enlace")
 
+    best_quality = _is_best_quality(user_pref)
+
     try:
         loop = asyncio.get_running_loop()
-        info = await loop.run_in_executor(None, get_video_info, url, user_pref or MAX_VIDEO_HEIGHT)
+        info = await loop.run_in_executor(
+            None, get_video_info, url, user_pref or MAX_VIDEO_HEIGHT, best_quality,
+        )
 
         # Carrusel (varios elementos) o post de una sola foto: se descarga completo y se
         # envía como álbum/foto. Ambos pasan por la misma ruta (download_post baja las
         # fotos vía thumbnail y los videos con su formato).
         if (info.get("is_playlist") and info.get("count", 1) > 1) or info.get("is_image"):
             messenger = TelegramMessenger(status_msg, DELIVERY_LIMITS)
-            await pipeline.carousel(url, messenger=messenger, user_pref_height=user_pref)
+            await pipeline.carousel(url, messenger=messenger, user_pref_height=user_pref,
+                                    best_quality=best_quality)
             return
 
         filesize = info.get("filesize")
@@ -492,8 +535,12 @@ async def _process_url(update: Update, url: str, user_pref: int | None, allow_fo
             return
 
         messenger = TelegramMessenger(status_msg, DELIVERY_LIMITS)
-        await pipeline.download(url, fmt="video", messenger=messenger, user_pref_height=user_pref, song=info.get("song"))
+        await pipeline.download(url, fmt="video", messenger=messenger, user_pref_height=user_pref,
+                                song=info.get("song"), best_quality=best_quality)
 
+    except VideoConversionError:
+        logger.warning("Video no convertible para %s", url)
+        await status_msg.edit_text(_conversion_error_message(best_quality))
     except yt_dlp.DownloadError as e:
         logger.warning("DownloadError para %s: %s", url, e)
         await status_msg.edit_text(download_error_message(str(e)))
@@ -527,7 +574,11 @@ async def handle_format_choice(update: Update, context: ContextTypes.DEFAULT_TYP
             if await _audio_over_limit(url, status_msg, asyncio.get_running_loop()):
                 return
         messenger = TelegramMessenger(status_msg, DELIVERY_LIMITS)
-        await pipeline.download(url, fmt=fmt, messenger=messenger, user_pref_height=user_pref, song=song)
+        await pipeline.download(url, fmt=fmt, messenger=messenger, user_pref_height=user_pref,
+                                song=song, best_quality=_is_best_quality(user_pref))
+    except VideoConversionError:
+        logger.warning("Video no convertible para %s", url)
+        await status_msg.edit_text(_conversion_error_message(_is_best_quality(user_pref)))
     except yt_dlp.DownloadError as e:
         logger.warning("DownloadError para %s: %s", url, e)
         await status_msg.edit_text(download_error_message(str(e)))

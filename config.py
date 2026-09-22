@@ -15,6 +15,17 @@ def _env_int(name: str, default: int) -> int:
         return default
 
 
+def _env_float(name: str, default: float) -> float:
+    """Igual que _env_int, para los valores que no son enteros (dBFS, LUFS)."""
+    raw = os.getenv(name)
+    if raw is None or raw.strip() == "":
+        return default
+    try:
+        return float(raw)
+    except ValueError:
+        return default
+
+
 # Vacío por defecto (no os.environ[...]) para que módulos compartidos con el canal web
 # (api.py, que no habla con Telegram) puedan importar config sin necesitar este token.
 # bot.py valida que no esté vacío en su propio main(), donde sí es obligatorio.
@@ -102,6 +113,36 @@ MAX_PREFLIGHT_SIZE_BYTES = _env_int("MAX_PREFLIGHT_SIZE_MB", 150) * 1024 * 1024
 # escala con la resolución, no con el tamaño del archivo: cap a 720p en hosts con
 # poca RAM baja el pico de ~200 MB (1080p) a ~100 MB. Por defecto = calidad de descarga.
 MAX_COMPRESS_HEIGHT = _env_int("MAX_COMPRESS_HEIGHT", MAX_VIDEO_HEIGHT)
+
+# --- Modo "máxima calidad" (/settings del bot) ---
+# Tope de resolución del modo. También hace de centinela: es el valor que se guarda en
+# users.max_resolution para distinguirlo de una resolución normal (el bot solo ofrece
+# hasta 1080p), así que no hizo falta una columna nueva.
+BEST_QUALITY_HEIGHT = 2160
+# Cap de resolución al recodificar en ese modo. Va aparte de MAX_COMPRESS_HEIGHT porque
+# los dos casos son distintos: el recode normal es un accidente (bajó algo raro) y
+# conviene capado bajo, mientras que aquí el usuario pidió explícitamente calidad y
+# capar a 720p devolvería algo PEOR que el H.264 nativo que se baja sin el modo.
+# El costo es real: un libx264 a 1080p pica en ~700 MB de RAM y en un host de 512 MB
+# puede morir por OOM — por eso el modo es opt-in y esto es un dial aparte.
+MAX_QUALITY_COMPRESS_HEIGHT = _env_int("MAX_QUALITY_COMPRESS_HEIGHT", MAX_VIDEO_HEIGHT)
+
+# --- Normalización de audio ---
+# TikTok no deja el volumen "horneado" en el archivo: la app sube la ganancia al
+# reproducir usando la loudness que manda su propia API, así que el MP4 que se descarga
+# suena mucho más bajo que el mismo video dentro de TikTok (medido con ffmpeg sobre un
+# TikTok cualquiera: -27.3 LUFS integrados, contra los -14 LUFS que es el estándar de
+# reproducción). Lo mismo, en menor grado, en el resto de plataformas.
+# El coste es bajo: se mide el audio y, solo si hace falta, se recodifica SOLO la pista
+# de audio copiando el video (~2 s para un video de 37 s), así que no toca el pico de RAM
+# que impone libx264 — que es el dial delicado en Render free.
+NORMALIZE_AUDIO: bool = os.getenv("NORMALIZE_AUDIO", "1").strip().lower() in ("1", "true", "yes", "on")
+# Objetivo de loudness integrada. -14 LUFS es lo que usan YouTube/Spotify/TikTok al
+# reproducir; subir más solo comprime el rango dinámico sin sonar mejor.
+AUDIO_TARGET_LUFS = _env_float("AUDIO_TARGET_LUFS", -14.0)
+# Por debajo de esta ganancia no se toca nada: recodificar el audio para ganar 1 dB no
+# se nota y sí cuesta una pasada de ffmpeg más una generación de pérdida.
+AUDIO_MIN_GAIN_LU = _env_float("AUDIO_MIN_GAIN_LU", 2.0)
 
 # Rate limiting: máximo de requests por usuario en una ventana de tiempo
 RATE_LIMIT_REQUESTS = 8   # máximo de descargas

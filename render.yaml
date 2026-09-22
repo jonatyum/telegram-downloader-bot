@@ -28,6 +28,12 @@ services:
         value: "2"
       - key: MAX_COMPRESS_HEIGHT
         value: "720"
+      # Cap del recode en modo "máxima calidad" (/settings). Medido con libx264 veryfast
+      # sobre un TikTok vertical: 1080x1920 pica en ~760 MB de RAM (605 MB incluso con
+      # -threads 1) y aquí solo hay 512 MB, así que el 1080p del default no entra: el OOM
+      # killer se lleva a ffmpeg a mitad del recode. Con 720 el pico baja a ~490 MB.
+      - key: MAX_QUALITY_COMPRESS_HEIGHT
+        value: "720"
       - key: MAX_PREFLIGHT_SIZE_MB
         value: "50"
       - key: MAX_DOCUMENT_SIZE_MB

@@ -95,8 +95,10 @@ def _audio_filename(title: str, artist: str | None) -> str:
     return f"{artist} - {title}.mp3" if artist else f"{title}.mp3"
 
 
-def _quality_note(user_pref: int | None, height: int) -> str | None:
-    if not user_pref or not height:
+def _quality_note(user_pref: int | None, height: int, best_quality: bool = False) -> str | None:
+    # En modo máxima calidad no hay resolución pedida que comparar: el "tope" es solo
+    # el techo del modo, y avisar "pediste 2160p" en cada TikTok sería ruido.
+    if best_quality or not user_pref or not height:
         return None
     if height < user_pref:
         return f"📐 Solo estaba disponible en {height}p (pediste {user_pref}p)"
@@ -136,6 +138,7 @@ class Pipeline:
         messenger: Messenger,
         user_pref_height: int | None = None,
         song: dict | None = None,
+        best_quality: bool = False,
     ) -> None:
         await messenger.update("⏳ En cola")
         filepath = None
@@ -158,7 +161,9 @@ class Pipeline:
                         filename=_audio_filename(title, artist),
                     )
                 else:
-                    filepath = await loop.run_in_executor(None, download_video, url, progress_cb, effective_height)
+                    filepath = await loop.run_in_executor(
+                        None, download_video, url, progress_cb, effective_height, best_quality,
+                    )
 
                     # Post de una sola foto (link de imagen, no video): enviar como foto.
                     if filepath.rsplit(".", 1)[-1].lower() in _IMAGE_EXTS:
@@ -169,7 +174,7 @@ class Pipeline:
 
                     file_size = os.path.getsize(filepath)
                     width, height = get_video_dimensions(filepath)
-                    quality_note = _quality_note(user_pref_height, height)
+                    quality_note = _quality_note(user_pref_height, height, best_quality)
 
                     send_path = filepath
                     as_document = False
@@ -211,6 +216,7 @@ class Pipeline:
         *,
         messenger: Messenger,
         user_pref_height: int | None = None,
+        best_quality: bool = False,
     ) -> None:
         await messenger.update("⏳ En cola")
         items: list[dict] = []
@@ -222,7 +228,9 @@ class Pipeline:
             progress_cb = _progress_bridge(loop, messenger)
 
             try:
-                items = await loop.run_in_executor(None, download_post, url, progress_cb, effective_height)
+                items = await loop.run_in_executor(
+                    None, download_post, url, progress_cb, effective_height, best_quality,
+                )
                 if not items:
                     await messenger.update("⚠️ No pude descargar el contenido de ese post.")
                     return

@@ -29,7 +29,7 @@ import uuid
 
 import yt_dlp
 from fastapi import FastAPI, Header, HTTPException
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel
 from starlette.background import BackgroundTask
 
@@ -63,6 +63,9 @@ def _authorize(token: str | None) -> None:
 class UrlBody(BaseModel):
     url: str
     max_height: int | None = None
+    # Lo manda un servidor nuevo; uno viejo no lo manda y se queda en False, que es
+    # exactamente el comportamiento de siempre.
+    best_quality: bool = False
 
 
 class QueryBody(BaseModel):
@@ -121,6 +124,22 @@ def _sweep_jobs() -> None:
                 _cleanup(job["path"])
             _jobs.pop(jid, None)
             logger.info("Job %s descartado por antigüedad.", jid[:8])
+
+
+def _speaks_jobs(header: str | None) -> bool:
+    """
+    El servidor anuncia con X-Worker-Protocol que entiende el flujo de trabajos.
+
+    Sin esa cabecera se responde como antes, con el archivo en la propia respuesta. No
+    es cortesía: un servidor viejo no mira el código de estado y trata el cuerpo como el
+    archivo, así que recibiría el JSON del id —unas decenas de bytes— y lo guardaría
+    como si fuera el video. Pasó de verdad al reiniciar el worker antes de desplegar el
+    servidor, y por eso la negociación es explícita en lugar de asumir la versión.
+    """
+    try:
+        return int(header or 0) >= 2
+    except ValueError:
+        return False
 
 
 async def _start_job(fn, *args) -> dict:
@@ -187,7 +206,7 @@ def _cleanup(path: str) -> None:
 @app.post("/info")
 async def info(body: UrlBody, x_worker_token: str | None = Header(default=None)):
     _authorize(x_worker_token)
-    return await _run(get_video_info, body.url, body.max_height or MAX_VIDEO_HEIGHT)
+    return await _run(get_video_info, body.url, body.max_height or MAX_VIDEO_HEIGHT, body.best_quality)
 
 
 @app.post("/audio-info")
@@ -196,22 +215,35 @@ async def audio_info(body: UrlBody, x_worker_token: str | None = Header(default=
     return await _run(get_audio_info, body.url)
 
 
-@app.post("/video", status_code=202)
-async def video(body: UrlBody, x_worker_token: str | None = Header(default=None)):
+@app.post("/video")
+async def video(body: UrlBody, x_worker_token: str | None = Header(default=None),
+                x_worker_protocol: str | None = Header(default=None)):
     _authorize(x_worker_token)
-    return await _start_job(download_video, body.url, None, body.max_height)
+    if _speaks_jobs(x_worker_protocol):
+        return JSONResponse(
+            await _start_job(download_video, body.url, None, body.max_height, body.best_quality),
+            status_code=202)
+    return _file_response(await _run(download_video, body.url, None, body.max_height, body.best_quality))
 
 
-@app.post("/audio", status_code=202)
-async def audio(body: UrlBody, x_worker_token: str | None = Header(default=None)):
+@app.post("/audio")
+async def audio(body: UrlBody, x_worker_token: str | None = Header(default=None),
+                x_worker_protocol: str | None = Header(default=None)):
     _authorize(x_worker_token)
-    return await _start_job(download_audio, body.url, None)
+    if _speaks_jobs(x_worker_protocol):
+        return JSONResponse(await _start_job(download_audio, body.url, None), status_code=202)
+    path, meta = await _run(download_audio, body.url, None)
+    return _file_response(path, meta)
 
 
-@app.post("/song", status_code=202)
-async def song(body: QueryBody, x_worker_token: str | None = Header(default=None)):
+@app.post("/song")
+async def song(body: QueryBody, x_worker_token: str | None = Header(default=None),
+               x_worker_protocol: str | None = Header(default=None)):
     _authorize(x_worker_token)
-    return await _start_job(download_song, body.query, None)
+    if _speaks_jobs(x_worker_protocol):
+        return JSONResponse(await _start_job(download_song, body.query, None), status_code=202)
+    path, meta = await _run(download_song, body.query, None)
+    return _file_response(path, meta)
 
 
 @app.get("/jobs/{job_id}")
