@@ -63,6 +63,9 @@ def _authorize(token: str | None) -> None:
 class UrlBody(BaseModel):
     url: str
     max_height: int | None = None
+    # Lo manda un servidor nuevo; uno viejo no lo manda y se queda en False, que es
+    # exactamente el comportamiento de siempre.
+    best_quality: bool = False
 
 
 class QueryBody(BaseModel):
@@ -203,7 +206,7 @@ def _cleanup(path: str) -> None:
 @app.post("/info")
 async def info(body: UrlBody, x_worker_token: str | None = Header(default=None)):
     _authorize(x_worker_token)
-    return await _run(get_video_info, body.url, body.max_height or MAX_VIDEO_HEIGHT)
+    return await _run(get_video_info, body.url, body.max_height or MAX_VIDEO_HEIGHT, body.best_quality)
 
 
 @app.post("/audio-info")
@@ -217,9 +220,10 @@ async def video(body: UrlBody, x_worker_token: str | None = Header(default=None)
                 x_worker_protocol: str | None = Header(default=None)):
     _authorize(x_worker_token)
     if _speaks_jobs(x_worker_protocol):
-        return JSONResponse(await _start_job(download_video, body.url, None, body.max_height),
-                            status_code=202)
-    return _file_response(await _run(download_video, body.url, None, body.max_height))
+        return JSONResponse(
+            await _start_job(download_video, body.url, None, body.max_height, body.best_quality),
+            status_code=202)
+    return _file_response(await _run(download_video, body.url, None, body.max_height, body.best_quality))
 
 
 @app.post("/audio")

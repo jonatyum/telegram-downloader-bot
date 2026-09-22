@@ -13,12 +13,16 @@ from collections.abc import Callable
 from typing import TypeVar
 import yt_dlp
 from config import (
+    AUDIO_MIN_GAIN_LU,
+    AUDIO_TARGET_LUFS,
     DOWNLOAD_DIR,
     MAX_DOCUMENT_SIZE_BYTES,
     MAX_VIDEO_HEIGHT,
     MAX_COMPRESS_HEIGHT,
+    MAX_QUALITY_COMPRESS_HEIGHT,
     MAX_PREFLIGHT_SIZE_BYTES,
     MAX_DOWNLOAD_ATTEMPTS,
+    NORMALIZE_AUDIO,
     RETRY_BACKOFF_SECONDS,
     YOUTUBE_COOKIES_FILE,
     YOUTUBE_PLAYER_CLIENTS,
@@ -554,35 +558,70 @@ def _download_opts(
 _AVC = r"~='^(avc|h264)'"
 
 
-def _video_format(h: int) -> str:
+def _video_format(best_quality: bool = False) -> str:
     """
     Cadena de selección de formato, ordenada de "no requiere recodificar" a "lo que haya".
 
     Bajar H.264 directamente es lo único que evita pasar por _ensure_h264, y esa
     recodificación es justo lo que revienta en hosts con poca CPU/RAM: un TikTok 1080p en
-    H.265 obliga a un libx264 a 1080p (~700 MB de pico) que en Render free se queda colgado
-    o lo mata el OOM. Por eso el códec pesa más que la resolución: vale más un 540p que se
-    entrega que un 1080p que nunca llega.
+    H.265 obliga a un libx264 a 1080p (~760 MB de pico medidos) que en Render free se
+    queda colgado o lo mata el OOM. Por eso el códec pesa más que la resolución: vale más
+    un 540p que se entrega que un 1080p que nunca llega.
+
+    best_quality invierte esa prioridad: el usuario pidió "máxima calidad" a sabiendas,
+    así que manda la resolución y el recode se acepta como costo (ver _ensure_h264).
+
+    Ninguna rama filtra por altura: el tope de resolución vive entero en format_sort
+    (ver _format_sort), que es el único sitio donde se puede expresar sin romperse en
+    vertical.
     """
+    if best_quality:
+        # Sin filtro de códec: en TikTok el único 1080p es H.265 (medido: el mejor H.264
+        # que publica es un 720p), y el 1440p/2160p de YouTube solo existe en VP9/AV1. Lo
+        # que baje en un códec que Telegram no reproduce lo arregla _ensure_h264.
+        return "bestvideo+bestaudio/best"
     return (
         # 1. DASH en H.264 (YouTube): video + audio por separado.
-        f"bestvideo[vcodec{_AVC}][height<={h}][ext=mp4]+bestaudio[ext=m4a]"
-        f"/bestvideo[vcodec{_AVC}][height<={h}]+bestaudio"
+        f"bestvideo[vcodec{_AVC}][ext=mp4]+bestaudio[ext=m4a]"
+        f"/bestvideo[vcodec{_AVC}]+bestaudio"
         # 2. Combinado en H.264 (TikTok, Instagram). Instagram sirve el H.264 solo así:
         #    sus streams DASH son VP9, que Telegram no reproduce (imagen congelada + audio).
-        #    La última variante va sin filtro de altura para los combinados de IG cuya
-        #    resolución viene sin metadatos.
-        f"/best[vcodec{_AVC}][height<={h}][ext=mp4]/best[vcodec{_AVC}][ext=mp4]"
-        f"/best[vcodec{_AVC}][height<={h}]/best[vcodec{_AVC}]"
+        f"/best[vcodec{_AVC}][ext=mp4]/best[vcodec{_AVC}]"
         # 3. Sin H.264 disponible: bajar lo que haya y dejar que _ensure_h264 lo arregle.
-        f"/best[height<={h}][ext=mp4]/best[ext=mp4]"
-        f"/bestvideo[height<={h}]+bestaudio/best[height<={h}]/best"
+        f"/best[ext=mp4]/bestvideo+bestaudio/best"
     )
 
 
-# vcodec antes que res por el mismo motivo que _video_format: en las ramas de fallback,
-# preferir H.264 aunque sea de menor resolución evita la recodificación.
-_FORMAT_SORT = ["vcodec:avc", "res", "fps", "ext:mp4", "acodec:m4a"]
+def _format_sort(h: int, best_quality: bool) -> list[str]:
+    """
+    Orden de formatos, con el tope de resolución incluido como límite ("res:720").
+
+    El tope va aquí y no en un filtro [height<={h}] porque "height" es el lado LARGO del
+    video, y en una plataforma vertical eso no es la resolución que se anuncia: el 1080p
+    de TikTok es 1080x1920, o sea height=1920. Con el filtro, pedir 1080p (o 480p, o
+    cualquier cosa) descartaba TODOS los formatos menos el 540p, y la descarga terminaba
+    cayendo en las ramas sin filtro: el ajuste de /settings no cambiaba nada en TikTok ni
+    en Reels. El límite de format_sort compara contra el lado corto, que es lo que la
+    gente llama "1080p", y además no excluye: si no hay nada bajo el tope, cae en lo más
+    cercano en vez de quedarse sin formatos.
+
+    vcodec:avc sigue delante del tope en el modo normal por el mismo motivo que ordena
+    _video_format: preferir H.264 aunque sea de mayor resolución evita el recode, que es
+    lo que revienta en un host con poca RAM. En modo máxima calidad manda la resolución y
+    "br" desempata entre formatos de la misma (en TikTok, a 720p, el H.264 de 865k le
+    gana al H.265 de 419k, y de paso ahorra el recode).
+    """
+    if best_quality:
+        return [f"res:{h}", "fps", "br", "vcodec:avc", "ext:mp4", "acodec:m4a"]
+    return ["vcodec:avc", f"res:{h}", "fps", "ext:mp4", "acodec:m4a"]
+
+
+def _format_opts(h: int, best_quality: bool) -> dict:
+    """Selector + orden de formatos, que preflight y descarga tienen que compartir."""
+    return {
+        "format": _video_format(best_quality),
+        "format_sort": _format_sort(h, best_quality),
+    }
 
 
 def _is_image_entry(entry: dict) -> bool:
@@ -718,7 +757,121 @@ def _warn_if_silent(filepath: str, url: str, max_height: int | None) -> None:
         )
 
 
-def _ensure_h264(filepath: str) -> str:
+def _measure_loudness(filepath: str) -> dict | None:
+    """
+    Primera pasada de loudnorm: mide la loudness del archivo sin escribir nada.
+    Devuelve el dict que imprime ffmpeg (input_i, input_tp, input_lra, input_thresh)
+    o None si la medición no sirve (sin audio, silencio total, ffmpeg falló).
+    """
+    cmd = [
+        "ffmpeg", "-hide_banner", "-nostats", "-i", filepath,
+        "-af", f"loudnorm=I={AUDIO_TARGET_LUFS}:TP=-2.0:LRA=11:print_format=json",
+        "-f", "null", "-",
+    ]
+    try:
+        r = subprocess.run(cmd, capture_output=True, timeout=180)
+    except Exception:
+        logger.warning("_measure_loudness: ffmpeg no pudo medir %s", filepath)
+        return None
+    if r.returncode != 0:
+        return None
+
+    # loudnorm imprime el JSON al final de stderr, detrás de todo el log de ffmpeg.
+    err = r.stderr.decode(errors="replace")
+    start = err.rfind("{")
+    end = err.rfind("}")
+    if start == -1 or end < start:
+        return None
+    try:
+        data = json.loads(err[start:end + 1])
+    except ValueError:
+        return None
+
+    # Un archivo mudo mide "-inf"/"nan": no hay nada que normalizar y float() lo
+    # aceptaría como un número válido que luego daría una ganancia absurda.
+    try:
+        measured = {k: float(data[k]) for k in ("input_i", "input_tp", "input_lra", "input_thresh")}
+    except (KeyError, ValueError):
+        return None
+    if any(v != v or v in (float("inf"), float("-inf")) for v in measured.values()):
+        return None
+    return measured
+
+
+def _normalize_audio(filepath: str) -> str:
+    """
+    Sube el volumen del archivo hasta AUDIO_TARGET_LUFS cuando viene demasiado bajo.
+
+    TikTok (y en menor medida el resto) no dejan el volumen horneado en el archivo: la
+    app aplica la ganancia al reproducir con la loudness que manda su API, así que el
+    MP4 descargado suena mucho más flojo que el mismo video dentro de la app — medido,
+    -27.3 LUFS contra los -14 LUFS de referencia, o sea unos 13 dB por debajo.
+
+    Solo se recodifica la pista de audio (el video se copia), así que no entra libx264
+    y el pico de RAM no se mueve. Si la medición o ffmpeg fallan se devuelve el archivo
+    original: un audio bajo es mucho mejor que una descarga perdida.
+    """
+    if not NORMALIZE_AUDIO or not _has_audio_stream(filepath):
+        return filepath
+
+    measured = _measure_loudness(filepath)
+    if measured is None:
+        return filepath
+
+    gain = AUDIO_TARGET_LUFS - measured["input_i"]
+    if gain < AUDIO_MIN_GAIN_LU:
+        logger.info("_normalize_audio: %s ya está en %.1f LUFS, no se toca",
+                    filepath, measured["input_i"])
+        return filepath
+
+    out = filepath.rsplit(".", 1)[0] + "_norm.mp4"
+    logger.info("_normalize_audio: %s a %.1f LUFS (+%.1f dB) → %.1f LUFS",
+                filepath, measured["input_i"], gain, AUDIO_TARGET_LUFS)
+    # Segunda pasada con los valores medidos: así loudnorm aplica una ganancia lineal
+    # cuando cabe y solo comprime si el pico no da headroom. TP=-2.0 y no -1.0 porque
+    # el encoder AAC se pasa hasta ~1.5 dB del true peak que calcula loudnorm.
+    cmd = [
+        "ffmpeg", "-y", "-hide_banner", "-nostats", "-i", filepath,
+        "-map", "0",
+        "-c:v", "copy",
+        "-af",
+        f"loudnorm=I={AUDIO_TARGET_LUFS}:TP=-2.0:LRA=11"
+        f":measured_I={measured['input_i']}:measured_TP={measured['input_tp']}"
+        f":measured_LRA={measured['input_lra']}:measured_thresh={measured['input_thresh']}"
+        ":linear=true",
+        "-c:a", "aac", "-b:a", "128k",
+        "-movflags", "+faststart",
+        out,
+    ]
+    try:
+        r = subprocess.run(cmd, capture_output=True, timeout=300)
+    except Exception:
+        logger.warning("_normalize_audio: ffmpeg no terminó sobre %s", filepath)
+        if os.path.exists(out):
+            os.remove(out)
+        return filepath
+    if r.returncode != 0 or not os.path.exists(out):
+        logger.error("_normalize_audio falló (rc=%s): %s", r.returncode, r.stderr.decode()[:400])
+        if os.path.exists(out):
+            os.remove(out)
+        return filepath
+
+    os.remove(filepath)
+    return out
+
+
+class VideoConversionError(Exception):
+    """
+    El video bajó bien pero no se pudo dejar en un formato reproducible.
+
+    Antes esto se tragaba y se entregaba el archivo original: para un H.265/VP9/AV1 eso
+    significa que Telegram muestra la imagen congelada con el audio sonando, que es peor
+    que un error — el usuario no tiene forma de saber qué pasó ni qué hacer. Cada canal
+    lo traduce a un mensaje suyo.
+    """
+
+
+def _ensure_h264(filepath: str, short_side_cap: int | None = None) -> str:
     """
     Red de seguridad de compatibilidad: Telegram (y iOS/QuickTime) no reproducen VP9/AV1
     dentro de un MP4 — ni los perfiles H.264 de 10-bit / 4:4:4 — se ve la imagen congelada
@@ -738,7 +891,15 @@ def _ensure_h264(filepath: str) -> str:
     logger.info("Recodificando %s (codec=%s pix_fmt=%s) → H.264 yuv420p para compatibilidad con Telegram",
                 filepath, codec, pix_fmt)
     cmd = ["ffmpeg", "-y", "-i", filepath]
-    if MAX_COMPRESS_HEIGHT:
+    if short_side_cap:
+        # Modo máxima calidad: el tope se aplica al lado CORTO, que es lo que la gente
+        # llama "1080p". Capar la altura como en la rama de abajo dejaría un TikTok de
+        # 1080x1920 en 608x1080 — o sea, recodificar caro para entregar menos de lo que
+        # ya se bajaba sin el modo. El if elige el lado según la orientación y el -2 del
+        # otro lado mantiene el aspecto (y par); min() evita el upscale.
+        cmd += ["-vf", f"scale='if(gt(iw,ih),-2,min({short_side_cap},iw))'"
+                       f":'if(gt(iw,ih),min({short_side_cap},ih),-2)'"]
+    elif MAX_COMPRESS_HEIGHT:
         # La RAM de libx264 escala con la resolución: un encode a 1080p pica en ~700 MB y
         # en un host de 512 MB lo mata el OOM a mitad, dejando la descarga colgada sin
         # error. Mismo cap que compress_video. -2 mantiene el ancho par; nunca hace upscale.
@@ -748,20 +909,22 @@ def _ensure_h264(filepath: str) -> str:
         "-c:a", "aac", "-b:a", "128k",
         "-movflags", "+faststart", out,
     ]
+    # Un fallo aquí es casi siempre el OOM killer llevándose a ffmpeg: la RAM de libx264
+    # escala con la resolución y en un host de 512 MB un encode a 1080p no entra (medido:
+    # ~760 MB de pico en 1080x1920). Ver MAX_QUALITY_COMPRESS_HEIGHT.
+    def _failed(reason: str) -> None:
+        logger.error("_ensure_h264 no pudo convertir %s (codec=%s): %s", filepath, codec, reason)
+        for leftover in (out, filepath):
+            if os.path.exists(leftover):
+                os.remove(leftover)
+        raise VideoConversionError(reason)
+
     try:
         r = subprocess.run(cmd, capture_output=True, timeout=300)
     except subprocess.TimeoutExpired:
-        # Sin capturar, el timeout subía como excepción cruda y el usuario solo veía
-        # "error inesperado". Mejor entregar el original: puede que Telegram lo reproduzca.
-        logger.error("_ensure_h264: ffmpeg superó el timeout de 300s en %s", filepath)
-        if os.path.exists(out):
-            os.remove(out)
-        return filepath
+        _failed("ffmpeg superó el timeout de 300s")
     if r.returncode != 0 or not os.path.exists(out):
-        logger.error("_ensure_h264 falló (rc=%s): %s", r.returncode, r.stderr.decode()[:400])
-        if os.path.exists(out):
-            os.remove(out)
-        return filepath
+        _failed(f"ffmpeg rc={r.returncode}: {r.stderr.decode()[:400]}")
     os.remove(filepath)
     return out
 
@@ -846,18 +1009,22 @@ def _fix_stream_loop(filepath: str) -> str:
         return filepath
 
 
-def download_video(url: str, on_progress: Callable[[str], None] | None = None, max_height: int | None = None) -> str:
+def download_video(url: str, on_progress: Callable[[str], None] | None = None,
+                   max_height: int | None = None, best_quality: bool = False) -> str:
     """
     Descarga el video de la URL dada y devuelve la ruta al archivo.
     Lanza yt_dlp.DownloadError si algo falla.
     on_progress recibe el status string de yt-dlp ("downloading", "finished", etc).
+    best_quality prioriza resolución sobre códec (ver _video_format).
     """
     h = max_height or MAX_VIDEO_HEIGHT
 
     if _worker_enabled(is_youtube_url(url)):
         if on_progress:
             on_progress("downloading")
-        got = _worker_download("/video", {"url": url, "max_height": h})
+        # Un worker viejo ignora best_quality (pydantic descarta los campos que no
+        # conoce) y devuelve la calidad de siempre: se degrada, no se rompe.
+        got = _worker_download("/video", {"url": url, "max_height": h, "best_quality": best_quality})
         if got:
             # El worker ya corrió _ensure_h264 y _fix_stream_loop de su lado: lo que
             # llega es el archivo final, no hay que volver a procesarlo.
@@ -867,8 +1034,7 @@ def download_video(url: str, on_progress: Callable[[str], None] | None = None, m
 
     ydl_opts = _download_opts(
         output_template, on_progress, youtube=is_youtube_url(url),
-        format=_video_format(h),
-        format_sort=_FORMAT_SORT,
+        **_format_opts(h, best_quality),
         merge_output_format="mp4",
         postprocessor_args={
             "merger": [
@@ -890,8 +1056,11 @@ def download_video(url: str, on_progress: Callable[[str], None] | None = None, m
         return filename
 
     filename = _run_with_retry(_do_download)
-    filename = _ensure_h264(filename)
+    filename = _ensure_h264(filename, MAX_QUALITY_COMPRESS_HEIGHT if best_quality else None)
     filename = _fix_stream_loop(filename)
+    # Después de los remuxes: ambos copian el audio tal cual, así que normalizar antes
+    # sería medir un archivo que todavía puede cambiar de pista.
+    filename = _normalize_audio(filename)
     _warn_if_silent(filename, url, max_height)
     return filename
 
@@ -900,6 +1069,7 @@ def download_post(
     url: str,
     on_progress: Callable[[str], None] | None = None,
     max_height: int | None = None,
+    best_quality: bool = False,
 ) -> list[dict]:
     """
     Descarga todos los items de un post con varios elementos (carrusel de Instagram, etc.).
@@ -911,10 +1081,9 @@ def download_post(
 
     ydl_opts = _download_opts(
         output_template, on_progress, youtube=is_youtube_url(url),
-        # Formato permisivo: los items de video bajan con la misma preferencia por H.264
-        # que download_video, y los de imagen caen al único formato disponible (la foto).
-        format=_video_format(h),
-        format_sort=_FORMAT_SORT,
+        # Formato permisivo: los items de video bajan con el mismo selector que
+        # download_video, y los de imagen caen al único formato disponible (la foto).
+        **_format_opts(h, best_quality),
         merge_output_format="mp4",
         # Los items de foto no tienen formato de video: sin esto yt-dlp lanza
         # "No video formats found!" y aborta el post entero. Las fotos se bajan aparte.
@@ -955,7 +1124,15 @@ def download_post(
                 # Misma red de seguridad que download_video: un item de video en VP9/AV1
                 # (o H.264 10-bit) se vería congelado en el álbum de Telegram.
                 if kind == "video":
-                    path = _ensure_h264(path)
+                    try:
+                        path = _ensure_h264(path, MAX_QUALITY_COMPRESS_HEIGHT if best_quality else None)
+                    except VideoConversionError:
+                        # Mismo criterio que un item que no se pudo bajar: se salta y el
+                        # resto del álbum se entrega igual. Colarlo sin convertir dejaría
+                        # un elemento congelado en medio del carrusel.
+                        logger.warning("Item de video no convertible, se omite: %s", entry.get("id"))
+                        continue
+                    path = _normalize_audio(path)
                     _warn_if_silent(path, url, max_height)
                 items.append({"path": path, "kind": kind})
         return items
@@ -1026,7 +1203,7 @@ def _identify_song(info: dict) -> dict | None:
     return {"track": track, "artist": artist}
 
 
-def get_video_info(url: str, max_height: int | None = None) -> dict:
+def get_video_info(url: str, max_height: int | None = None, best_quality: bool = False) -> dict:
     """
     Obtiene metadatos del video sin descargarlo.
     Retorna title, duration (segundos) y filesize (bytes, puede ser None).
@@ -1035,7 +1212,7 @@ def get_video_info(url: str, max_height: int | None = None) -> dict:
     h = max_height or MAX_VIDEO_HEIGHT
 
     if _worker_enabled(is_youtube_url(url)):
-        got = _worker_info("/info", {"url": url, "max_height": h})
+        got = _worker_info("/info", {"url": url, "max_height": h, "best_quality": best_quality})
         if got is not None:
             return got
 
@@ -1043,8 +1220,8 @@ def get_video_info(url: str, max_height: int | None = None) -> dict:
     opts.update({
         # Mismo selector que la descarga real: si el preflight estimara el tamaño de un
         # formato distinto al que luego se baja, el chequeo de límite no valdría nada.
-        "format": _video_format(h),
-        "format_sort": _FORMAT_SORT,
+        # Vale también para best_quality: ahí el formato elegido es otro y pesa distinto.
+        **_format_opts(h, best_quality),
         # Necesario para posts de foto (single o carrusel): sin esto el preflight
         # revienta con "No video formats found!" antes de poder clasificarlos.
         "ignore_no_formats_error": True,

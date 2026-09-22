@@ -26,7 +26,7 @@ from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel, field_validator
 
 from config import DOWNLOAD_DIR, MAX_COMPRESS_HEIGHT, MAX_CONCURRENT_DOWNLOADS, MAX_VIDEO_HEIGHT
-from downloader import check_youtube_config, fetch_thumbnail, get_video_info
+from downloader import check_youtube_config, fetch_thumbnail, get_video_info, VideoConversionError
 from links import is_supported_url
 from pipeline import DeliveryLimits, Pipeline, download_error_message
 from rate_limiter import RateLimiter
@@ -209,6 +209,13 @@ async def _run_job(job: Job, url: str, kind: str, resolution: int | None) -> Non
             await _pipeline.download(
                 url, kind, messenger=messenger, user_pref_height=resolution, song=info.get("song"),
             )
+    except VideoConversionError:
+        # El archivo bajó pero no se pudo convertir (normalmente, el recode sin memoria).
+        # Servirlo igual daría un archivo que el navegador no reproduce.
+        logger.warning("Video no convertible en job %s (%s)", job.id, url)
+        job.status = "error"
+        job.error = "Bajé el video pero no pude convertirlo a un formato reproducible."
+        await job.publish({"type": "error", "text": job.error})
     except yt_dlp.DownloadError as e:
         logger.warning("DownloadError para %s: %s", url, e)
         job.status = "error"

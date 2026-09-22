@@ -82,7 +82,7 @@ class TestInfo:
                                     headers={"X-Worker-Token": TOKEN})
         assert resp.status_code == 200
         assert resp.json() == info
-        assert spy.call_args[0] == ("https://youtu.be/abc", 720)
+        assert spy.call_args[0] == ("https://youtu.be/abc", 720, False)
 
     async def test_download_error_becomes_422(self):
         """
