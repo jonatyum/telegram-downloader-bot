@@ -481,13 +481,24 @@ async def _process_url(update: Update, url: str, user_pref: int | None, allow_fo
             None, get_video_info, url, user_pref or MAX_VIDEO_HEIGHT, best_quality,
         )
 
+        # Convertir cuesta memoria y minutos, y no siempre compra resolución: en un Reel
+        # de Instagram el H.264 combinado da el mismo 1080x1920 que el VP9 que habría que
+        # recodificar. Cuando el preflight dice que empatan, se baja en modo normal — el
+        # resultado es idéntico y llega sin pasar por ffmpeg. (Un worker viejo no manda el
+        # campo: se asume que sí hace falta, que es el comportamiento de antes.)
+        if best_quality and info.get("avc_matches_best", False):
+            logger.info("Máxima calidad sin recode para %s: el H.264 ya da la mejor "
+                        "resolución disponible", url)
+            best_quality = False
+
         # Carrusel (varios elementos) o post de una sola foto: se descarga completo y se
         # envía como álbum/foto. Ambos pasan por la misma ruta (download_post baja las
         # fotos vía thumbnail y los videos con su formato).
+        # El carrusel va siempre en modo normal: ahí un recode fallido no tiene reintento
+        # y el item se perdería del álbum sin que el usuario sepa por qué.
         if (info.get("is_playlist") and info.get("count", 1) > 1) or info.get("is_image"):
             messenger = TelegramMessenger(status_msg, DELIVERY_LIMITS)
-            await pipeline.carousel(url, messenger=messenger, user_pref_height=user_pref,
-                                    best_quality=best_quality)
+            await pipeline.carousel(url, messenger=messenger, user_pref_height=user_pref)
             return
 
         filesize = info.get("filesize")

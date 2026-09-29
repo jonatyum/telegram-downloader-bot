@@ -62,6 +62,8 @@ class Messenger(Protocol):
 _PHASE_MESSAGES = {
     "downloading": "⬇️ Descargando",
     "finished":    "🔄 Procesando",
+    # El recode de máxima calidad no salió; se reintenta en el formato compatible.
+    "fallback":    "⚠️ No pude convertirlo en máxima calidad, bajando la versión compatible",
 }
 
 
