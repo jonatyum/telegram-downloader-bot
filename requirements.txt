@@ -1,5 +1,12 @@
 python-telegram-bot[webhooks]==21.10
-yt-dlp>=2026.8.19
+# El extra curl-cffi no es cosmético: el extractor de Instagram lo usa como camino
+# principal. Sin él, `_can_impersonate` es False y la consulta GraphQL que devuelve el
+# media se salta entera (`... if self._can_impersonate else None`), quedando solo el
+# scraping de la página como respaldo — que es justo lo que Instagram corta desde IPs de
+# datacenter como las de Render. Instala wheels abi3, así que no hace falta compilador
+# en la imagen. Ver también el comentario de deno en los Dockerfiles: mismo tipo de
+# dependencia silenciosa, sin la cual yt-dlp degrada sin avisar.
+yt-dlp[curl-cffi]>=2026.8.19
 python-dotenv==1.1.0
 psycopg[binary,pool]==3.2.9
 # --- Canal web (api.py), servicio de Render separado del bot ---

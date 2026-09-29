@@ -2,6 +2,7 @@ import json
 import logging
 import math
 import os
+import re
 import shutil
 import subprocess
 import threading
@@ -556,6 +557,8 @@ def _download_opts(
 # YouTube "avc1.<perfil>". Un filtro de prefijo ([vcodec^=avc]) solo pilla el segundo, así
 # que las ramas "preferir H.264" se saltaban en TikTok y acababa eligiendo H.265.
 _AVC = r"~='^(avc|h264)'"
+# El mismo criterio que _AVC, para poder aplicarlo en Python (ver _avc_matches_best).
+_AVC_RE = re.compile(r"^(avc|h264)")
 
 
 def _video_format(best_quality: bool = False) -> str:
@@ -607,12 +610,18 @@ def _format_sort(h: int, best_quality: bool) -> list[str]:
 
     vcodec:avc sigue delante del tope en el modo normal por el mismo motivo que ordena
     _video_format: preferir H.264 aunque sea de mayor resolución evita el recode, que es
-    lo que revienta en un host con poca RAM. En modo máxima calidad manda la resolución y
-    "br" desempata entre formatos de la misma (en TikTok, a 720p, el H.264 de 865k le
-    gana al H.265 de 419k, y de paso ahorra el recode).
+    lo que revienta en un host con poca RAM.
+
+    En modo máxima calidad manda la resolución, pero vcodec:avc va justo detrás y ANTES
+    que "br": a igualdad de resolución, el H.264 se entrega tal cual y el otro habría que
+    recodificarlo, así que un bitrate mayor no compensa. Ese orden importa sobre todo en
+    Instagram, que publica el mismo Reel como un combinado H.264 y como streams DASH en
+    VP9 de más bitrate: con "br" delante se elegía el VP9 y cada Reel terminaba en un
+    recode que en Render free no cabe en memoria. Solo se paga la conversión cuando el
+    códec incompatible aporta resolución de verdad, que es lo que el modo promete.
     """
     if best_quality:
-        return [f"res:{h}", "fps", "br", "vcodec:avc", "ext:mp4", "acodec:m4a"]
+        return [f"res:{h}", "fps", "vcodec:avc", "br", "ext:mp4", "acodec:m4a"]
     return ["vcodec:avc", f"res:{h}", "fps", "ext:mp4", "acodec:m4a"]
 
 
@@ -1056,7 +1065,21 @@ def download_video(url: str, on_progress: Callable[[str], None] | None = None,
         return filename
 
     filename = _run_with_retry(_do_download)
-    filename = _ensure_h264(filename, MAX_QUALITY_COMPRESS_HEIGHT if best_quality else None)
+    try:
+        filename = _ensure_h264(filename, MAX_QUALITY_COMPRESS_HEIGHT if best_quality else None)
+    except VideoConversionError:
+        if not best_quality:
+            raise
+        # En máxima calidad el recode es parte del trato, así que fallar ahí no puede
+        # costarle el video al usuario: se vuelve a bajar con el selector normal, que
+        # prefiere H.264 y no necesita convertir nada. Es lo que habría recibido sin el
+        # modo. No hay riesgo de bucle: la segunda pasada va con best_quality=False y
+        # ahí la excepción se propaga.
+        logger.warning("Recode de máxima calidad fallido en %s: se reintenta en el "
+                       "formato compatible", url)
+        if on_progress:
+            on_progress("fallback")
+        return download_video(url, on_progress, max_height, best_quality=False)
     filename = _fix_stream_loop(filename)
     # Después de los remuxes: ambos copian el audio tal cual, así que normalizar antes
     # sería medir un archivo que todavía puede cambiar de pista.
@@ -1138,6 +1161,34 @@ def download_post(
         return items
 
     return _run_with_retry(_do_download)
+
+
+def _format_res(f: dict) -> int:
+    """Resolución de un formato por su lado CORTO, que es lo que se anuncia como '1080p'."""
+    w, h = f.get("width"), f.get("height")
+    if w and h:
+        return min(w, h)
+    return h or w or 0
+
+
+def _avc_matches_best(info: dict) -> bool:
+    """
+    True si el mejor H.264 disponible llega a la misma resolución que el mejor formato
+    a secas. Cuando pasa, el modo máxima calidad no tiene nada que ganar convirtiendo.
+
+    Hace falta mirarlo aquí, en Python, porque no se puede expresar en un selector de
+    yt-dlp: "bestvideo+bestaudio" se queda con la vía DASH en cuanto existe, y en
+    Instagram el DASH es VP9 mientras el H.264 se publica como formato combinado de la
+    MISMA resolución. Resultado: cada Reel se bajaba en VP9 y se recodificaba para
+    terminar en el mismo 1080x1920 que el combinado daba ya listo — un recode que en un
+    host de 512 MB no cabe en memoria.
+    """
+    videos = [f for f in (info.get("formats") or []) if f.get("vcodec") != "none"]
+    if not videos:
+        return False
+    best = max(_format_res(f) for f in videos)
+    avc = [f for f in videos if _AVC_RE.match(f.get("vcodec") or "")]
+    return bool(avc) and max(_format_res(f) for f in avc) >= best
 
 
 def _available_height(info: dict) -> int | None:
@@ -1264,6 +1315,8 @@ def get_video_info(url: str, max_height: int | None = None, best_quality: bool =
         "is_music": bool(info.get("track") or info.get("artist")),
         "is_playlist": False,
         "is_image": _is_image_entry(info),
+        # Para que el canal pueda ahorrarse el modo máxima calidad cuando no aporta nada.
+        "avc_matches_best": _avc_matches_best(info),
         "count": 1,
         "song": _identify_song(info),
         "thumbnail": _best_thumbnail_url(info),
