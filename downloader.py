@@ -17,6 +17,7 @@ from config import (
     AUDIO_MIN_GAIN_LU,
     AUDIO_TARGET_LUFS,
     DOWNLOAD_DIR,
+    FFMPEG_THREADS,
     MAX_DOCUMENT_SIZE_BYTES,
     MAX_VIDEO_HEIGHT,
     MAX_COMPRESS_HEIGHT,
@@ -766,48 +767,54 @@ def _warn_if_silent(filepath: str, url: str, max_height: int | None) -> None:
         )
 
 
-def _measure_loudness(filepath: str) -> dict | None:
+# Resumen final de ebur128 (con framelog=quiet son las únicas líneas que quedan).
+_LOUDNESS_I_RE = re.compile(r"^\s*I:\s*(-?\d+(?:\.\d+)?)\s*LUFS", re.M)
+_LOUDNESS_PEAK_RE = re.compile(r"^\s*Peak:\s*(-?\d+(?:\.\d+)?)\s*dBFS", re.M)
+# Por encima de esto no es un archivo "bajo de volumen", es uno prácticamente mudo
+# (ebur128 mide -70 LUFS en el silencio): subirlo 50 dB solo amplificaría el ruido.
+_MAX_GAIN_DB = 30.0
+# Techo del limitador, en dBFS. No es -1 porque el encoder AAC se pasa hasta ~1 dB del
+# pico que ve el limitador, y un pico por encima de 0 dBFS suena a distorsión.
+_LIMITER_CEILING_DB = -3.0
+
+
+def _measure_loudness(filepath: str) -> tuple[float, float] | None:
     """
-    Primera pasada de loudnorm: mide la loudness del archivo sin escribir nada.
-    Devuelve el dict que imprime ffmpeg (input_i, input_tp, input_lra, input_thresh)
-    o None si la medición no sirve (sin audio, silencio total, ffmpeg falló).
+    Mide (loudness integrada, true peak) del audio, en LUFS y dBFS.
+    Devuelve None si la medición no sirve: sin audio, silencio, o ffmpeg falló.
+
+    Se mide con ebur128 y con -vn. Las dos cosas importan en un host lento: la primera
+    pasada de loudnorm cuesta 5 veces más que ebur128 para el mismo dato, y sin -vn
+    ffmpeg decodifica además el video entero para nada. Medido sobre un TikTok de 37 s:
+    0,98 s de CPU con loudnorm contra 0,20 s con ebur128, y 2,4 s si encima se deja
+    entrar el video — que en Render free (0,1 vCPU) son 24 s de "Procesando".
     """
     cmd = [
         "ffmpeg", "-hide_banner", "-nostats", "-i", filepath,
-        "-af", f"loudnorm=I={AUDIO_TARGET_LUFS}:TP=-2.0:LRA=11:print_format=json",
+        "-vn", "-af", "ebur128=peak=true:framelog=quiet",
         "-f", "null", "-",
     ]
     try:
-        r = subprocess.run(cmd, capture_output=True, timeout=180)
+        r = subprocess.run(cmd, capture_output=True, timeout=120)
     except Exception:
         logger.warning("_measure_loudness: ffmpeg no pudo medir %s", filepath)
         return None
     if r.returncode != 0:
         return None
 
-    # loudnorm imprime el JSON al final de stderr, detrás de todo el log de ffmpeg.
     err = r.stderr.decode(errors="replace")
-    start = err.rfind("{")
-    end = err.rfind("}")
-    if start == -1 or end < start:
+    i_match = _LOUDNESS_I_RE.search(err)
+    peak_match = _LOUDNESS_PEAK_RE.search(err)
+    if not i_match or not peak_match:
         return None
-    try:
-        data = json.loads(err[start:end + 1])
-    except ValueError:
+    integrated, peak = float(i_match.group(1)), float(peak_match.group(1))
+    # Un archivo mudo mide -70 LUFS o menos; no hay nada que normalizar ahí.
+    if integrated != integrated or integrated <= -70.0:
         return None
-
-    # Un archivo mudo mide "-inf"/"nan": no hay nada que normalizar y float() lo
-    # aceptaría como un número válido que luego daría una ganancia absurda.
-    try:
-        measured = {k: float(data[k]) for k in ("input_i", "input_tp", "input_lra", "input_thresh")}
-    except (KeyError, ValueError):
-        return None
-    if any(v != v or v in (float("inf"), float("-inf")) for v in measured.values()):
-        return None
-    return measured
+    return integrated, peak
 
 
-def _normalize_audio(filepath: str) -> str:
+def _normalize_audio(filepath: str, on_progress: Callable[[str], None] | None = None) -> str:
     """
     Sube el volumen del archivo hasta AUDIO_TARGET_LUFS cuando viene demasiado bajo.
 
@@ -826,34 +833,36 @@ def _normalize_audio(filepath: str) -> str:
     measured = _measure_loudness(filepath)
     if measured is None:
         return filepath
+    integrated, peak = measured
 
-    gain = AUDIO_TARGET_LUFS - measured["input_i"]
-    if gain < AUDIO_MIN_GAIN_LU:
-        logger.info("_normalize_audio: %s ya está en %.1f LUFS, no se toca",
-                    filepath, measured["input_i"])
+    gain = AUDIO_TARGET_LUFS - integrated
+    if gain < AUDIO_MIN_GAIN_LU or gain > _MAX_GAIN_DB:
+        logger.info("_normalize_audio: %s está en %.1f LUFS (ganancia %.1f dB), no se toca",
+                    filepath, integrated, gain)
         return filepath
 
     out = filepath.rsplit(".", 1)[0] + "_norm.mp4"
-    logger.info("_normalize_audio: %s a %.1f LUFS (+%.1f dB) → %.1f LUFS",
-                filepath, measured["input_i"], gain, AUDIO_TARGET_LUFS)
-    # Segunda pasada con los valores medidos: así loudnorm aplica una ganancia lineal
-    # cuando cabe y solo comprime si el pico no da headroom. TP=-2.0 y no -1.0 porque
-    # el encoder AAC se pasa hasta ~1.5 dB del true peak que calcula loudnorm.
+    logger.info("_normalize_audio: %s a %.1f LUFS (pico %.1f dBFS) +%.1f dB → %.1f LUFS",
+                filepath, integrated, peak, gain, AUDIO_TARGET_LUFS)
+    if on_progress:
+        on_progress("normalizing")
+    # Ganancia fija más limitador, en vez de una segunda pasada de loudnorm: cuesta 0,45 s
+    # de CPU contra 1,7 s para el mismo resultado medido (-15,8 LUFS contra -15,1), y en un
+    # host de 0,1 vCPU esa diferencia son 12 s de espera. El limitador es lo que permite
+    # subir 12 dB un audio cuyo pico ya estaba a -4,7 dBFS sin clipear.
+    ceiling = 10 ** (_LIMITER_CEILING_DB / 20)
     cmd = [
         "ffmpeg", "-y", "-hide_banner", "-nostats", "-i", filepath,
         "-map", "0",
         "-c:v", "copy",
-        "-af",
-        f"loudnorm=I={AUDIO_TARGET_LUFS}:TP=-2.0:LRA=11"
-        f":measured_I={measured['input_i']}:measured_TP={measured['input_tp']}"
-        f":measured_LRA={measured['input_lra']}:measured_thresh={measured['input_thresh']}"
-        ":linear=true",
+        "-af", f"volume={gain:.1f}dB,alimiter=limit={ceiling:.3f}:level=disabled",
+        *_ffmpeg_threads(),
         "-c:a", "aac", "-b:a", "128k",
         "-movflags", "+faststart",
         out,
     ]
     try:
-        r = subprocess.run(cmd, capture_output=True, timeout=300)
+        r = subprocess.run(cmd, capture_output=True, timeout=180)
     except Exception:
         logger.warning("_normalize_audio: ffmpeg no terminó sobre %s", filepath)
         if os.path.exists(out):
@@ -869,6 +878,20 @@ def _normalize_audio(filepath: str) -> str:
     return out
 
 
+def _ffmpeg_threads() -> list[str]:
+    """Args de hilos para ffmpeg. Ver FFMPEG_THREADS: es un límite de memoria."""
+    return ["-threads", str(FFMPEG_THREADS)] if FFMPEG_THREADS else []
+
+
+# Las recodificaciones no pueden solaparse aunque sí lo hagan las descargas. Con
+# MAX_CONCURRENT_DOWNLOADS=2, dos libx264 a la vez suman ~640 MB y en un host de 512 MB
+# el segundo se lleva al proceso entero por OOM — y el usuario ve la descarga colgada
+# para siempre, porque el mensaje de estado se queda donde estaba. Serializarlos hace
+# esperar al segundo, que es infinitamente mejor que matar a los dos. El semáforo vive
+# aquí, en el motor, porque el límite es del host: lo comparten todos los canales.
+_encode_lock = threading.Semaphore(1)
+
+
 class VideoConversionError(Exception):
     """
     El video bajó bien pero no se pudo dejar en un formato reproducible.
@@ -880,7 +903,8 @@ class VideoConversionError(Exception):
     """
 
 
-def _ensure_h264(filepath: str, short_side_cap: int | None = None) -> str:
+def _ensure_h264(filepath: str, short_side_cap: int | None = None,
+                 on_progress: Callable[[str], None] | None = None) -> str:
     """
     Red de seguridad de compatibilidad: Telegram (y iOS/QuickTime) no reproducen VP9/AV1
     dentro de un MP4 — ni los perfiles H.264 de 10-bit / 4:4:4 — se ve la imagen congelada
@@ -899,6 +923,10 @@ def _ensure_h264(filepath: str, short_side_cap: int | None = None) -> str:
     out = filepath.rsplit(".", 1)[0] + "_h264.mp4"
     logger.info("Recodificando %s (codec=%s pix_fmt=%s) → H.264 yuv420p para compatibilidad con Telegram",
                 filepath, codec, pix_fmt)
+    # Es la etapa más lenta de todas y hasta ahora no se anunciaba: el canal se quedaba
+    # en "Procesando" durante todo el recode, que en un host de 0,1 vCPU son minutos.
+    if on_progress:
+        on_progress("converting")
     cmd = ["ffmpeg", "-y", "-i", filepath]
     if short_side_cap:
         # Modo máxima calidad: el tope se aplica al lado CORTO, que es lo que la gente
@@ -915,6 +943,7 @@ def _ensure_h264(filepath: str, short_side_cap: int | None = None) -> str:
         cmd += ["-vf", f"scale=-2:'min({MAX_COMPRESS_HEIGHT},ih)'"]
     cmd += [
         "-c:v", "libx264", "-preset", "veryfast", "-crf", "23", "-pix_fmt", "yuv420p",
+        *_ffmpeg_threads(),
         "-c:a", "aac", "-b:a", "128k",
         "-movflags", "+faststart", out,
     ]
@@ -929,7 +958,8 @@ def _ensure_h264(filepath: str, short_side_cap: int | None = None) -> str:
         raise VideoConversionError(reason)
 
     try:
-        r = subprocess.run(cmd, capture_output=True, timeout=300)
+        with _encode_lock:
+            r = subprocess.run(cmd, capture_output=True, timeout=300)
     except subprocess.TimeoutExpired:
         _failed("ffmpeg superó el timeout de 300s")
     if r.returncode != 0 or not os.path.exists(out):
@@ -1066,7 +1096,8 @@ def download_video(url: str, on_progress: Callable[[str], None] | None = None,
 
     filename = _run_with_retry(_do_download)
     try:
-        filename = _ensure_h264(filename, MAX_QUALITY_COMPRESS_HEIGHT if best_quality else None)
+        filename = _ensure_h264(filename, MAX_QUALITY_COMPRESS_HEIGHT if best_quality else None,
+                                on_progress=on_progress)
     except VideoConversionError:
         if not best_quality:
             raise
@@ -1083,7 +1114,7 @@ def download_video(url: str, on_progress: Callable[[str], None] | None = None,
     filename = _fix_stream_loop(filename)
     # Después de los remuxes: ambos copian el audio tal cual, así que normalizar antes
     # sería medir un archivo que todavía puede cambiar de pista.
-    filename = _normalize_audio(filename)
+    filename = _normalize_audio(filename, on_progress=on_progress)
     _warn_if_silent(filename, url, max_height)
     return filename
 
@@ -1148,14 +1179,15 @@ def download_post(
                 # (o H.264 10-bit) se vería congelado en el álbum de Telegram.
                 if kind == "video":
                     try:
-                        path = _ensure_h264(path, MAX_QUALITY_COMPRESS_HEIGHT if best_quality else None)
+                        path = _ensure_h264(path, MAX_QUALITY_COMPRESS_HEIGHT if best_quality else None,
+                                            on_progress=on_progress)
                     except VideoConversionError:
                         # Mismo criterio que un item que no se pudo bajar: se salta y el
                         # resto del álbum se entrega igual. Colarlo sin convertir dejaría
                         # un elemento congelado en medio del carrusel.
                         logger.warning("Item de video no convertible, se omite: %s", entry.get("id"))
                         continue
-                    path = _normalize_audio(path)
+                    path = _normalize_audio(path, on_progress=on_progress)
                     _warn_if_silent(path, url, max_height)
                 items.append({"path": path, "kind": kind})
         return items
@@ -1488,6 +1520,7 @@ def compress_video(filepath: str, target_bytes: int, max_height: int | None = No
         "-maxrate", str(int(video_bps * 1.5)),
         "-bufsize", str(int(video_bps * 2)),
         "-preset", "veryfast",
+        *_ffmpeg_threads(),
         # Fuerza 8-bit 4:2:0: si el origen es 10-bit/4:4:4, sin esto libx264 saca un
         # perfil (High 10/4:4:4) que Telegram muestra negro/congelado.
         "-pix_fmt", "yuv420p",
@@ -1497,7 +1530,8 @@ def compress_video(filepath: str, target_bytes: int, max_height: int | None = No
     ]
 
     try:
-        r = subprocess.run(cmd, capture_output=True, timeout=600)
+        with _encode_lock:
+            r = subprocess.run(cmd, capture_output=True, timeout=600)
     except Exception:
         logger.exception("compress_video: ffmpeg falló al ejecutar")
         if os.path.exists(out):

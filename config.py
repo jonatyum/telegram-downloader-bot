@@ -114,6 +114,15 @@ MAX_PREFLIGHT_SIZE_BYTES = _env_int("MAX_PREFLIGHT_SIZE_MB", 150) * 1024 * 1024
 # poca RAM baja el pico de ~200 MB (1080p) a ~100 MB. Por defecto = calidad de descarga.
 MAX_COMPRESS_HEIGHT = _env_int("MAX_COMPRESS_HEIGHT", MAX_VIDEO_HEIGHT)
 
+# Hilos que se le permiten a ffmpeg. NO es un dial de velocidad, es uno de memoria: un
+# contenedor ve los cores de la máquina anfitriona, no su cuota de CPU, así que libx264
+# abre un hilo por core y reserva un contexto de codificación por hilo. Medido sobre el
+# mismo recode a 720x1280: 456 MB con los hilos por defecto, 319 MB con 2 y 296 MB con 1.
+# Sumados los 65 MB del proceso del bot, la primera cifra no cabe en un host de 512 MB —
+# y con 0,1 vCPU de cuota esos hilos extra tampoco aportan velocidad, solo overhead.
+# 0 = dejar decidir a ffmpeg (solo tiene sentido en una máquina con CPU de verdad).
+FFMPEG_THREADS = _env_int("FFMPEG_THREADS", 2)
+
 # --- Modo "máxima calidad" (/settings del bot) ---
 # Tope de resolución del modo. También hace de centinela: es el valor que se guarda en
 # users.max_resolution para distinguirlo de una resolución normal (el bot solo ofrece
