@@ -24,6 +24,12 @@ services:
       - key: WEB_URL
         value: "https://downloader.jonatyum.com"
       # --- Límites conservadores para los 512 MB de RAM del plan free ---
+      # Hilos de ffmpeg. Es un límite de MEMORIA, no de velocidad: el contenedor ve los
+      # cores del anfitrión y libx264 reserva un contexto por hilo, así que con los hilos
+      # por defecto un recode a 720x1280 pica en 456 MB y el proceso entero muere por OOM.
+      # Con 2 son 319 MB, y con 0,1 vCPU de cuota los hilos extra no daban velocidad igual.
+      - key: FFMPEG_THREADS
+        value: "2"
       - key: MAX_CONCURRENT_DOWNLOADS
         value: "2"
       - key: MAX_COMPRESS_HEIGHT

@@ -59,9 +59,14 @@ class Messenger(Protocol):
     async def send_album(self, items: list[dict]) -> None: ...
 
 
+# Las fases de post-proceso ("converting", "normalizing") existen porque "Procesando" era
+# un agujero negro: el recode y el ajuste de volumen son lo más lento de una descarga en un
+# host con poca CPU, y el mensaje se quedaba igual hasta el final sin decir en qué iba.
 _PHASE_MESSAGES = {
     "downloading": "⬇️ Descargando",
     "finished":    "🔄 Procesando",
+    "converting":  "🎞️ Convirtiendo el video, esto tarda un poco",
+    "normalizing": "🔊 Ajustando el volumen",
     # El recode de máxima calidad no salió; se reintenta en el formato compatible.
     "fallback":    "⚠️ No pude convertirlo en máxima calidad, bajando la versión compatible",
 }

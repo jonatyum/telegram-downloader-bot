@@ -42,7 +42,7 @@ class TestDownloadPost:
         )
 
         with patch("downloader.DOWNLOAD_DIR", str(tmp_path)), \
-             patch("downloader._ensure_h264", side_effect=lambda p, cap=None: p), \
+             patch("downloader._ensure_h264", side_effect=lambda p, cap=None, **kw: p), \
              patch("downloader._download_image", return_value=image_path), \
              patch("yt_dlp.YoutubeDL", return_value=_cm(ydl)):
             return download_post("https://www.instagram.com/p/abc/"), ydl
@@ -115,7 +115,7 @@ class TestDownloadPost:
              patch("yt_dlp.YoutubeDL", return_value=_cm(ydl)):
             items = download_post("https://www.instagram.com/p/abc/")
 
-        mock_h264.assert_called_once_with(str(vid), None)
+        mock_h264.assert_called_once_with(str(vid), None, on_progress=None)
         assert items[0]["path"] == str(converted)
 
     @staticmethod
@@ -760,7 +760,7 @@ class TestYoutubeWorker:
 
         with self._worker(), patch("downloader.DOWNLOAD_DIR", str(tmp_path)), \
              patch("downloader._worker_call", return_value=resp), \
-             patch("downloader._ensure_h264", side_effect=lambda p, cap=None: p), \
+             patch("downloader._ensure_h264", side_effect=lambda p, cap=None, **kw: p), \
              patch("downloader._fix_stream_loop", side_effect=lambda p: p), \
              patch("yt_dlp.YoutubeDL", return_value=cm):
             path = download_video("https://youtu.be/abc")
