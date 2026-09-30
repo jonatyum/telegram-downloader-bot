@@ -30,8 +30,12 @@ services:
       # Con 2 son 319 MB, y con 0,1 vCPU de cuota los hilos extra no daban velocidad igual.
       - key: FFMPEG_THREADS
         value: "2"
+      # 1 y no 2: el lock de codificación evita dos libx264 a la vez, pero no un recode
+      # (317 MB) coincidiendo con un envío a Telegram, que carga el archivo entero en RAM
+      # (~100-150 MB con el tope de 50 MB) — sumados los 65 MB del proceso, eso son ~500
+      # de 512 MB. Con 0,1 vCPU la concurrencia tampoco daba throughput real.
       - key: MAX_CONCURRENT_DOWNLOADS
-        value: "2"
+        value: "1"
       - key: MAX_COMPRESS_HEIGHT
         value: "720"
       # Cap del recode en modo "máxima calidad" (/settings). Medido con libx264 veryfast
@@ -93,8 +97,10 @@ services:
       - key: WEB_ORIGINS
         value: "https://downloader.jonatyum.com,https://jonatyum.github.io"
       # --- Mismos límites conservadores que el bot, mismo motivo: 512 MB de RAM ---
+      # Mismo motivo que en el bot: 512 MB compartidos con ffmpeg. Acá no hay envío que
+      # bufferice, pero sí el recode y la lectura del archivo al servirlo.
       - key: MAX_CONCURRENT_DOWNLOADS
-        value: "2"
+        value: "1"
       - key: MAX_COMPRESS_HEIGHT
         value: "720"
       # 2000 MB (no 500): la web ahora ofrece hasta 4K, y 500 MB rechazaba de entrada

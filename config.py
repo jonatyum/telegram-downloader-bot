@@ -161,6 +161,13 @@ RATE_LIMIT_WINDOW = 60    # en segundos (ventana deslizante)
 # y ambas fases consumen RAM, así que en hosts con poca memoria conviene 1-2.
 MAX_CONCURRENT_DOWNLOADS = _env_int("MAX_CONCURRENT_DOWNLOADS", 5)
 
+# Techo de hilos para el trabajo síncrono (yt-dlp y ffmpeg corren en un executor).
+# Sin fijarlo, asyncio usa el executor por defecto, que crece hasta min(32, cpu+4) hilos:
+# el semáforo de descargas no lo limita porque el preflight de cada link corre FUERA de
+# él, así que N usuarios simultáneos eran N extracciones de yt-dlp a la vez, cada una con
+# su memoria. Con un techo, el consumo es predecible y lo de más espera en la cola.
+EXECUTOR_MAX_WORKERS = _env_int("EXECUTOR_MAX_WORKERS", max(4, MAX_CONCURRENT_DOWNLOADS * 2))
+
 # Retry a nivel de operación completa para errores transitorios (red/extracción).
 # Los retries internos de yt-dlp (retries/fragment_retries) cubren cortes dentro de
 # una descarga; esto reintenta el flujo entero cuando extract_info falla por algo pasajero.

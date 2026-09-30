@@ -89,6 +89,42 @@ def _run_with_retry(operation: Callable[[], _T]) -> _T:
     raise AssertionError("unreachable")  # pragma: no cover
 
 
+def purge_temp_dir(path: str | None = None) -> int:
+    """
+    Borra lo que haya quedado en DOWNLOAD_DIR (o en el directorio dado) y devuelve
+    cuántos archivos se fueron. Se llama SOLO al arrancar cada servicio.
+
+    Nadie limpiaba esto, y el `finally` de pipeline.py no alcanza: cuando el proceso
+    muere a mitad de una descarga —OOM, reinicio de la plataforma, deploy— el archivo
+    a medias se queda, igual que los ".part" de un merge de yt-dlp interrumpido. En un
+    disco efímero eso no se nota hasta que se llena y empiezan a fallar descargas que
+    no tienen nada que ver.
+
+    Los archivos ocultos se respetan: ahí vive la copia de trabajo del cookiefile.
+    Y los subdirectorios no se tocan, solo se avisan: en este directorio no debería
+    haber ninguno, así que si aparece uno es mejor mirarlo que borrarlo a ciegas.
+    """
+    target = path or DOWNLOAD_DIR
+    if not os.path.isdir(target):
+        return 0
+    borrados = 0
+    for name in os.listdir(target):
+        if name.startswith("."):
+            continue
+        full = os.path.join(target, name)
+        try:
+            if os.path.isdir(full) and not os.path.islink(full):
+                logger.warning("purge_temp_dir: %s es un directorio, se deja sin tocar", full)
+                continue
+            os.remove(full)
+            borrados += 1
+        except OSError:
+            logger.warning("purge_temp_dir: no pude borrar %s", full)
+    if borrados:
+        logger.info("purge_temp_dir: %d archivo(s) huérfano(s) borrado(s) de %s", borrados, target)
+    return borrados
+
+
 def _make_output_path() -> str:
     os.makedirs(DOWNLOAD_DIR, exist_ok=True)
     return os.path.join(DOWNLOAD_DIR, f"{uuid.uuid4()}.%(ext)s")
@@ -927,7 +963,7 @@ def _ensure_h264(filepath: str, short_side_cap: int | None = None,
     # en "Procesando" durante todo el recode, que en un host de 0,1 vCPU son minutos.
     if on_progress:
         on_progress("converting")
-    cmd = ["ffmpeg", "-y", "-i", filepath]
+    cmd = ["ffmpeg", "-y", "-hide_banner", "-nostats", "-v", "error", "-i", filepath]
     if short_side_cap:
         # Modo máxima calidad: el tope se aplica al lado CORTO, que es lo que la gente
         # llama "1080p". Capar la altura como en la rama de abajo dejaría un TikTok de
@@ -1003,46 +1039,60 @@ def _fix_stream_loop(filepath: str) -> str:
         # the video-only stream first (31s container), then concat that N times, then
         # mux with the original audio.
         video_only = filepath + ".video_only.mp4"
-        r1 = subprocess.run(
-            ["ffmpeg", "-y", "-i", filepath, "-c:v", "copy", "-an", video_only],
-            capture_output=True, timeout=30,
-        )
-        if r1.returncode != 0:
-            logger.error("ffmpeg video extract failed: %s", r1.stderr.decode())
-            return filepath
-
-        repeats = math.ceil(audio_dur / video_dur)
         concat_txt = filepath + ".concat.txt"
-        abs_path = os.path.abspath(video_only)
-        with open(concat_txt, "w") as f:
-            for _ in range(repeats):
-                f.write(f"file '{abs_path}'\n")
-
         fixed = filepath.rsplit(".", 1)[0] + "_fixed.mp4"
-        r2 = subprocess.run(
-            [
-                "ffmpeg", "-y",
-                "-f", "concat", "-safe", "0", "-i", concat_txt,
-                "-i", filepath,
-                "-map", "0:v:0",
-                "-map", "1:a:0",
-                "-t", str(audio_dur),
-                "-c:v", "copy",
-                "-c:a", "copy",
-                "-movflags", "+faststart",
-                fixed,
-            ],
-            capture_output=True, timeout=120,
-        )
-        os.unlink(concat_txt)
-        os.unlink(video_only)
+        # Cada rama de error devolvía el original dejando su temporal en disco: el
+        # video-only si falla la extracción, ese más el .txt si salta un timeout (las
+        # dos líneas de unlink estaban DESPUÉS del subprocess), y el _fixed a medias si
+        # falla el concat. Nada los borraba después, porque el pipeline solo conoce la
+        # ruta que esta función devuelve. De ahí el finally.
+        exito = False
+        try:
+            r1 = subprocess.run(
+                ["ffmpeg", "-y", "-hide_banner", "-nostats", "-v", "error",
+                 "-i", filepath, "-c:v", "copy", "-an", video_only],
+                capture_output=True, timeout=30,
+            )
+            if r1.returncode != 0:
+                logger.error("ffmpeg video extract failed: %s", r1.stderr.decode())
+                return filepath
 
-        if r2.returncode != 0:
-            logger.error("ffmpeg concat failed (rc=%d): %s", r2.returncode, r2.stderr.decode())
-            return filepath
-        os.remove(filepath)
-        logger.info("Stream loop fix applied: %s", fixed)
-        return fixed
+            repeats = math.ceil(audio_dur / video_dur)
+            abs_path = os.path.abspath(video_only)
+            with open(concat_txt, "w") as f:
+                for _ in range(repeats):
+                    f.write(f"file '{abs_path}'\n")
+
+            r2 = subprocess.run(
+                [
+                    "ffmpeg", "-y", "-hide_banner", "-nostats", "-v", "error",
+                    "-f", "concat", "-safe", "0", "-i", concat_txt,
+                    "-i", filepath,
+                    "-map", "0:v:0",
+                    "-map", "1:a:0",
+                    "-t", str(audio_dur),
+                    "-c:v", "copy",
+                    "-c:a", "copy",
+                    "-movflags", "+faststart",
+                    fixed,
+                ],
+                capture_output=True, timeout=120,
+            )
+            if r2.returncode != 0:
+                logger.error("ffmpeg concat failed (rc=%d): %s", r2.returncode, r2.stderr.decode())
+                return filepath
+
+            os.remove(filepath)
+            exito = True
+            logger.info("Stream loop fix applied: %s", fixed)
+            return fixed
+        finally:
+            for tmp in (concat_txt, video_only) if exito else (concat_txt, video_only, fixed):
+                if os.path.exists(tmp):
+                    try:
+                        os.remove(tmp)
+                    except OSError:
+                        logger.warning("No pude borrar el temporal %s", tmp)
     except Exception:
         logger.exception("_fix_stream_loop failed unexpectedly")
         return filepath
@@ -1146,6 +1196,24 @@ def download_post(
 
     def _do_download() -> list[dict]:
         items: list[dict] = []
+        try:
+            return _collect_items(ydl_opts, url, items, max_height, best_quality, on_progress)
+        except Exception:
+            # Los archivos ya escritos no llegan a manos de nadie: el `finally` de
+            # pipeline.carousel limpia la lista que esta función devuelve, y al propagar
+            # no devuelve ninguna. Sin esto, un post que revienta a mitad deja en disco
+            # todo lo que ya había bajado.
+            for it in items:
+                path = it.get("path")
+                if path and os.path.exists(path):
+                    try:
+                        os.remove(path)
+                    except OSError:
+                        logger.warning("No pude borrar el item huérfano %s", path)
+            raise
+
+    def _collect_items(ydl_opts: dict, url: str, items: list[dict], max_height, best_quality,
+                       on_progress) -> list[dict]:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             # Extraer sin descargar: con download=True yt-dlp intenta bajar cada item y
             # revienta en las fotos (no tienen formato). Bajamos cada item por separado.
@@ -1510,7 +1578,7 @@ def compress_video(filepath: str, target_bytes: int, max_height: int | None = No
         return None
 
     out = filepath.rsplit(".", 1)[0] + "_compressed.mp4"
-    cmd = ["ffmpeg", "-y", "-i", filepath]
+    cmd = ["ffmpeg", "-y", "-hide_banner", "-nostats", "-v", "error", "-i", filepath]
     if max_height:
         # scale=-2:min(h,ih) → baja a max_height solo si el original es más alto
         # (-2 mantiene el ancho par y la relación de aspecto). No hace upscale.

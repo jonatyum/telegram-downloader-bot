@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import time
 import uuid
 from functools import wraps
 
@@ -7,11 +8,11 @@ import yt_dlp
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, BotCommand, BotCommandScopeDefault, BotCommandScopeChat, InputMediaPhoto, InputMediaVideo
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, CallbackQueryHandler, ContextTypes, filters
 
-from config import BOT_TOKEN, MAX_TELEGRAM_SIZE_BYTES, MAX_PREFLIGHT_SIZE_BYTES, MAX_CONCURRENT_DOWNLOADS, ADMIN_CHAT_ID, HEALTH_PORT, MAX_VIDEO_HEIGHT, MAX_COMPRESS_HEIGHT, BEST_QUALITY_HEIGHT, WEBHOOK_URL, WEBHOOK_SECRET, PORT, NOTIFY_ON_START, WEB_URL
+from config import EXECUTOR_MAX_WORKERS, BOT_TOKEN, MAX_TELEGRAM_SIZE_BYTES, MAX_PREFLIGHT_SIZE_BYTES, MAX_CONCURRENT_DOWNLOADS, ADMIN_CHAT_ID, HEALTH_PORT, MAX_VIDEO_HEIGHT, MAX_COMPRESS_HEIGHT, BEST_QUALITY_HEIGHT, WEBHOOK_URL, WEBHOOK_SECRET, PORT, NOTIFY_ON_START, WEB_URL
 from database import init_db, upsert_user, get_all_users, get_stats, get_user_max_resolution, set_user_max_resolution, clear_user_max_resolution
-from downloader import check_youtube_config, get_video_info, get_audio_info, VideoConversionError
+from downloader import check_youtube_config, get_video_info, get_audio_info, purge_temp_dir, VideoConversionError
 from links import extract_urls, is_supported_url, is_youtube_url
-from pipeline import DeliveryLimits, Pipeline, download_error_message
+from pipeline import DeliveryLimits, Pipeline, download_error_message, install_bounded_executor
 from rate_limiter import rate_limiter
 from version import get_local_version, check_remote, uptime_str
 
@@ -24,8 +25,34 @@ logging.basicConfig(
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logger = logging.getLogger(__name__)
 
-# URL pendiente por usuario hasta que elija formato (video o audio)
+# URL pendiente por usuario hasta que elija formato (video o audio).
+# Un slot por usuario, y con caducidad: si nadie pulsa el botón la entrada no se
+# reclamaba nunca, y se quedaba reteniendo el objeto Message de PTB. Con un slot por
+# usuario eso crece con la base de usuarios, sin techo. El teclado, además, ya deja de
+# valer solo (handle_format_choice contesta "esa opción venció"), así que guardarlo más
+# tiempo del que el usuario puede usarlo no servía para nada.
 _pending: dict[int, dict] = {}
+_PENDING_TTL_SECONDS = 15 * 60
+
+
+def _set_pending(user_id: int, data: dict) -> None:
+    """Guarda la elección pendiente del usuario y barre las que ya vencieron."""
+    ahora = time.monotonic()
+    for uid, pend in list(_pending.items()):
+        if ahora - pend.get("created", ahora) > _PENDING_TTL_SECONDS:
+            del _pending[uid]
+    data["created"] = ahora
+    _pending[user_id] = data
+
+
+def _take_pending(user_id: int) -> dict | None:
+    """Saca la elección pendiente, o None si no hay o si ya caducó."""
+    pend = _pending.pop(user_id, None)
+    if pend is None:
+        return None
+    if time.monotonic() - pend.get("created", 0) > _PENDING_TTL_SECONDS:
+        return None
+    return pend
 
 # Orquesta las descargas contra el motor; el límite de concurrencia vive dentro (ver
 # pipeline.py). Es el único punto de entrada al motor, así que su límite de descargas
@@ -201,6 +228,14 @@ _ADMIN_COMMANDS = _PUBLIC_COMMANDS + [
 
 
 async def post_init(application) -> None:
+    # Techo de hilos para todo el trabajo síncrono (yt-dlp, ffmpeg). Ver config.
+    install_bounded_executor(EXECUTOR_MAX_WORKERS)
+
+    # Lo que quedó de la ejecución anterior no lo va a reclamar nadie: los estados viven
+    # en memoria y se fueron con el proceso. Si murió a mitad de una descarga (OOM,
+    # deploy), el archivo sigue ahí ocupando disco.
+    purge_temp_dir()
+
     # Registrar comandos visibles según el scope
     await application.bot.set_my_commands(_PUBLIC_COMMANDS, scope=BotCommandScopeDefault())
     if ADMIN_CHAT_ID:
@@ -515,7 +550,7 @@ async def _process_url(update: Update, url: str, user_pref: int | None, allow_fo
                 if WEB_URL else ""
             )
             if is_youtube and allow_format_choice:
-                _pending[user.id] = {"url": url, "status_msg": status_msg}
+                _set_pending(user.id, {"url": url, "status_msg": status_msg})
                 keyboard = InlineKeyboardMarkup([[
                     InlineKeyboardButton("🎵 Solo audio (MP3)", callback_data="fmt:audio"),
                 ]])
@@ -534,7 +569,8 @@ async def _process_url(update: Update, url: str, user_pref: int | None, allow_fo
             return
 
         if is_youtube and allow_format_choice:
-            _pending[user.id] = {"url": url, "status_msg": status_msg, "song": info.get("song")}
+            _set_pending(user.id, {"url": url, "status_msg": status_msg,
+                                   "song": info.get("song")})
             note = ("Parece una canción, así que el MP3 te va a llegar con título y artista."
                     if info.get("is_music") else "")
             keyboard = InlineKeyboardMarkup([[
@@ -565,7 +601,7 @@ async def handle_format_choice(update: Update, context: ContextTypes.DEFAULT_TYP
     await query.answer()
 
     user = update.effective_user
-    pending = _pending.pop(user.id, None)
+    pending = _take_pending(user.id)
 
     if not pending:
         await query.edit_message_text("⌛ Esa opción venció. Mándame el link de nuevo.")

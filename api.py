@@ -25,10 +25,11 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel, field_validator
 
-from config import DOWNLOAD_DIR, MAX_COMPRESS_HEIGHT, MAX_CONCURRENT_DOWNLOADS, MAX_VIDEO_HEIGHT
-from downloader import check_youtube_config, fetch_thumbnail, get_video_info, VideoConversionError
+from config import DOWNLOAD_DIR, EXECUTOR_MAX_WORKERS, MAX_COMPRESS_HEIGHT, MAX_CONCURRENT_DOWNLOADS, MAX_VIDEO_HEIGHT
+from downloader import (check_youtube_config, fetch_thumbnail, get_video_info, purge_temp_dir,
+                        VideoConversionError)
 from links import is_supported_url
-from pipeline import DeliveryLimits, Pipeline, download_error_message
+from pipeline import DeliveryLimits, Pipeline, download_error_message, install_bounded_executor
 from rate_limiter import RateLimiter
 
 # Uvicorn configura sus propios loggers, no el raíz, así que sin esto los mensajes de
@@ -118,8 +119,31 @@ class Job:
         self._subscribers.append(q)
         return q
 
+    def unsubscribe(self, q: asyncio.Queue) -> None:
+        """
+        Imprescindible, no cortesía: un EventSource se reconecta solo cada vez que la
+        conexión se corta, y sin dar de baja la cola anterior el job acumulaba una por
+        reconexión, con publish() encolando eventos en todas para siempre (bueno, hasta
+        que el job expira). El cliente que se va no vuelve a leer nada de la suya.
+        """
+        try:
+            self._subscribers.remove(q)
+        except ValueError:
+            pass
+
 
 _jobs: dict[str, Job] = {}
+
+# asyncio no guarda una referencia fuerte a las tareas en vuelo: una tarea sin dueño
+# puede ser recolectada a mitad y el job se quedaría en "running" para siempre, sin
+# error ni rastro. Se guardan aquí y se descartan solas al terminar.
+_background: set[asyncio.Task] = set()
+
+
+def _spawn(coro) -> None:
+    task = asyncio.create_task(coro)
+    _background.add(task)
+    task.add_done_callback(_background.discard)
 
 
 class WebMessenger:
@@ -271,8 +295,14 @@ class CreateJobBody(BaseModel):
 async def _lifespan(app: FastAPI):
     # Mismo motivo que en bot.py: los fallos de configuración de YouTube son silenciosos
     # y solo se manifiestan en la primera descarga, disfrazados de bloqueo de YouTube.
+    install_bounded_executor(EXECUTOR_MAX_WORKERS)
     check_youtube_config()
     os.makedirs(RESULTS_DIR, exist_ok=True)
+    # Los jobs viven en memoria, así que tras un reinicio nadie puede reclamar un
+    # resultado anterior: esos archivos son inalcanzables y solo ocupan disco. Lo mismo
+    # con lo que quedara a medias en DOWNLOAD_DIR.
+    purge_temp_dir()
+    purge_temp_dir(RESULTS_DIR)
     sweep_task = asyncio.create_task(_sweep_loop())
     try:
         yield
@@ -359,7 +389,7 @@ async def create_job(body: CreateJobBody, request: Request):
 
     job = Job(id=uuid.uuid4().hex)
     _jobs[job.id] = job
-    asyncio.create_task(_run_job(job, body.url, body.kind, body.resolution))
+    _spawn(_run_job(job, body.url, body.kind, body.resolution))
     return {"job_id": job.id}
 
 
@@ -379,11 +409,16 @@ async def job_events(job_id: str):
             return
 
         queue = job.subscribe()
-        while True:
-            event = await queue.get()
-            yield _sse(event)
-            if event["type"] in ("ready", "error"):
-                return
+        try:
+            while True:
+                event = await queue.get()
+                yield _sse(event)
+                if event["type"] in ("ready", "error"):
+                    return
+        finally:
+            # Cubre las tres salidas: final normal, cliente que cierra la pestaña
+            # (GeneratorExit) y cancelación del servidor.
+            job.unsubscribe(queue)
 
     return StreamingResponse(gen(), media_type="text/event-stream", headers={"Cache-Control": "no-cache"})
 
