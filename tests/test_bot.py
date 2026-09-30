@@ -517,7 +517,7 @@ class TestHandleFormatChoice:
         context = _make_context()
 
         import bot
-        bot._pending[42] = {"url": "https://youtu.be/abc", "status_msg": update.callback_query.message}
+        bot._set_pending(42, {"url": "https://youtu.be/abc", "status_msg": update.callback_query.message})
 
         with patch("pipeline.download_video", return_value=str(fake_video)), \
              patch("pipeline.get_video_dimensions", return_value=(0, 0)):
@@ -533,7 +533,7 @@ class TestHandleFormatChoice:
         context = _make_context()
 
         import bot
-        bot._pending[43] = {"url": "https://youtu.be/abc", "status_msg": update.callback_query.message}
+        bot._set_pending(43, {"url": "https://youtu.be/abc", "status_msg": update.callback_query.message})
 
         with patch("bot.get_audio_info", return_value={"filesize": None}), \
              patch("pipeline.download_audio", return_value=(str(fake_audio), {"title": "Song Title", "artist": "Cool Artist"})):
@@ -553,7 +553,7 @@ class TestHandleFormatChoice:
         context = _make_context()
 
         import bot
-        bot._pending[44] = {"url": "https://youtu.be/abc", "status_msg": update.callback_query.message}
+        bot._set_pending(44, {"url": "https://youtu.be/abc", "status_msg": update.callback_query.message})
 
         with patch("bot.get_audio_info", return_value={"filesize": None}), \
              patch("pipeline.download_audio", return_value=(str(fake_audio), {"title": "Just A Title", "artist": None})):
@@ -568,7 +568,7 @@ class TestHandleFormatChoice:
         context = _make_context()
 
         import bot
-        bot._pending[45] = {"url": "https://youtu.be/abc", "status_msg": update.callback_query.message}
+        bot._set_pending(45, {"url": "https://youtu.be/abc", "status_msg": update.callback_query.message})
 
         with patch("bot.get_audio_info", return_value={"filesize": 150 * 1024 * 1024 + 1}):
             await handle_format_choice(update, context)

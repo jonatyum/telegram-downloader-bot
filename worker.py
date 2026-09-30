@@ -33,19 +33,58 @@ from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel
 from starlette.background import BackgroundTask
 
-from config import MAX_VIDEO_HEIGHT, YOUTUBE_WORKER_TOKEN
+from config import EXECUTOR_MAX_WORKERS, MAX_VIDEO_HEIGHT, YOUTUBE_WORKER_TOKEN
+from pipeline import install_bounded_executor
 from downloader import (
     download_audio,
     download_song,
     download_video,
     get_audio_info,
     get_video_info,
+    purge_temp_dir,
 )
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
 
-app = FastAPI(title="YouTube worker")
+_SWEEP_INTERVAL_SECONDS = 60
+
+
+async def _sweep_loop() -> None:
+    """
+    Barrido periódico de trabajos vencidos. Antes solo se barría al aceptar un trabajo
+    nuevo, así que el último de la jornada se quedaba en memoria con su archivo en disco
+    hasta el siguiente arranque: justo el caso de una máquina que pasa horas sin pedidos.
+    """
+    while True:
+        await asyncio.sleep(_SWEEP_INTERVAL_SECONDS)
+        _sweep_jobs()
+
+
+async def _lifespan(app: FastAPI):
+    install_bounded_executor(EXECUTOR_MAX_WORKERS)
+    # Lo que quedó de la ejecución anterior es inalcanzable: los ids de los trabajos
+    # viven en memoria y se fueron con el proceso.
+    purge_temp_dir()
+    sweep = asyncio.create_task(_sweep_loop())
+    try:
+        yield
+    finally:
+        sweep.cancel()
+
+
+app = FastAPI(title="YouTube worker", lifespan=_lifespan)
+
+# asyncio no guarda una referencia fuerte a las tareas en vuelo, así que una tarea sin
+# dueño puede ser recolectada a mitad de ejecución y la descarga se cancelaría sola, sin
+# error y sin rastro. Se guardan aquí y se descartan al terminar.
+_background: set[asyncio.Task] = set()
+
+
+def _spawn(coro) -> None:
+    task = asyncio.create_task(coro)
+    _background.add(task)
+    task.add_done_callback(_background.discard)
 
 
 def _authorize(token: str | None) -> None:
@@ -148,7 +187,7 @@ async def _start_job(fn, *args) -> dict:
     jid = uuid.uuid4().hex
     _jobs[jid] = {"status": "running", "path": None, "meta": None,
                   "error": None, "created": time.monotonic()}
-    asyncio.create_task(_execute_job(jid, fn, *args))
+    _spawn(_execute_job(jid, fn, *args))
     return {"job": jid}
 
 

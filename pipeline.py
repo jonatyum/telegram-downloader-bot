@@ -12,6 +12,7 @@ import asyncio
 import logging
 import os
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from typing import Protocol, runtime_checkable
 
@@ -67,9 +68,28 @@ _PHASE_MESSAGES = {
     "finished":    "🔄 Procesando",
     "converting":  "🎞️ Convirtiendo el video, esto tarda un poco",
     "normalizing": "🔊 Ajustando el volumen",
+    # No se pudo convertir y se entrega tal cual: mejor avisarlo que dejar que el usuario
+    # descubra solo que el video se ve congelado.
+    "incompatible": "⚠️ No puedo convertirlo aquí; te lo mando tal cual (puede no verse en Telegram)",
     # El recode de máxima calidad no salió; se reintenta en el formato compatible.
     "fallback":    "⚠️ No pude convertirlo en máxima calidad, bajando la versión compatible",
 }
+
+
+def install_bounded_executor(max_workers: int) -> ThreadPoolExecutor:
+    """
+    Fija el executor que usarán todos los run_in_executor(None, ...) de este proceso.
+
+    Vive aquí por el mismo motivo que el semáforo de descargas: es un límite del host,
+    no de un canal. El executor por defecto de asyncio crece hasta min(32, cpu+4) hilos
+    y por ahí se colaba trabajo que el semáforo no ve — el preflight de cada link corre
+    fuera de él —, así que el pico de memoria dependía de cuántos usuarios escribieran a
+    la vez. Lo llama cada canal en su arranque, ya dentro del loop.
+    """
+    executor = ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="engine")
+    asyncio.get_running_loop().set_default_executor(executor)
+    logger.info("Executor acotado a %d hilos.", max_workers)
+    return executor
 
 
 def _progress_bridge(loop: asyncio.AbstractEventLoop, messenger: Messenger) -> Callable[[str], None]:
@@ -93,7 +113,14 @@ def _progress_bridge(loop: asyncio.AbstractEventLoop, messenger: Messenger) -> C
         if text is None or status == last_phase[0]:
             return
         last_phase[0] = status
-        asyncio.run_coroutine_threadsafe(_report(text), loop)
+        try:
+            asyncio.run_coroutine_threadsafe(_report(text), loop)
+        except RuntimeError:
+            # El loop ya se cerró (apagado del proceso). El try/except de _report no
+            # cubre esto: salta al programar, no al ejecutar, y esta función corre en el
+            # hilo del executor dentro del hook de yt-dlp, donde una excepción tumbaría
+            # la descarga por no poder pintar un mensaje de estado.
+            pass
 
     return callback
 
