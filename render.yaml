@@ -44,6 +44,12 @@ services:
       # killer se lleva a ffmpeg a mitad del recode. Con 720 el pico baja a ~490 MB.
       - key: MAX_QUALITY_COMPRESS_HEIGHT
         value: "720"
+      # 0 = no recodificar nunca en este host. Medido en producción: un Reel en VP9 no
+      # terminó de convertirse en los 300 s del timeout, o sea cinco minutos gastados
+      # para nada y una descarga repetida detrás por el fallback. Con 0,1 vCPU la
+      # conversión no cabe, así que no se empieza: se entrega el mejor formato compatible.
+      - key: TRANSCODE_MAX_DURATION
+        value: "0"
       - key: MAX_PREFLIGHT_SIZE_MB
         value: "50"
       - key: MAX_DOCUMENT_SIZE_MB

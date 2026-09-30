@@ -23,6 +23,7 @@ from config import (
     MAX_COMPRESS_HEIGHT,
     MAX_QUALITY_COMPRESS_HEIGHT,
     MAX_PREFLIGHT_SIZE_BYTES,
+    TRANSCODE_MAX_DURATION,
     MAX_DOWNLOAD_ATTEMPTS,
     NORMALIZE_AUDIO,
     RETRY_BACKOFF_SECONDS,
@@ -928,6 +929,21 @@ def _ffmpeg_threads() -> list[str]:
 _encode_lock = threading.Semaphore(1)
 
 
+def transcode_allowed(duration: float | None) -> bool:
+    """
+    ¿Cabe recodificar un video de esta duración en este host? Ver TRANSCODE_MAX_DURATION.
+
+    Una duración desconocida se trata como que no cabe cuando hay límite: si no se puede
+    medir, tampoco se puede prometer que termine, y el precio de equivocarse es tener al
+    usuario cinco minutos esperando algo que va a fallar.
+    """
+    if not TRANSCODE_MAX_DURATION:
+        return False
+    if duration is None:
+        return TRANSCODE_MAX_DURATION >= 3600
+    return duration <= TRANSCODE_MAX_DURATION
+
+
 class VideoConversionError(Exception):
     """
     El video bajó bien pero no se pudo dejar en un formato reproducible.
@@ -956,9 +972,23 @@ def _ensure_h264(filepath: str, short_side_cap: int | None = None,
     if codec_ok and pix_ok:
         return filepath
 
+    duration = _probe_duration(filepath)
+    if not transcode_allowed(duration):
+        # Se entrega sin convertir: en algunos clientes de Telegram un VP9/AV1 se ve
+        # congelado, pero eso es recuperable (la web lo sirve tal cual) y cinco minutos
+        # de espera terminando en error no lo son. El canal lo avisa.
+        logger.warning(
+            "No recodifico %s (codec=%s, %.0fs): supera TRANSCODE_MAX_DURATION=%ss. "
+            "Se entrega sin convertir.",
+            filepath, codec, duration or -1, TRANSCODE_MAX_DURATION,
+        )
+        if on_progress:
+            on_progress("incompatible")
+        return filepath
+
     out = filepath.rsplit(".", 1)[0] + "_h264.mp4"
-    logger.info("Recodificando %s (codec=%s pix_fmt=%s) → H.264 yuv420p para compatibilidad con Telegram",
-                filepath, codec, pix_fmt)
+    logger.info("Recodificando %s (codec=%s pix_fmt=%s, %.0fs) → H.264 yuv420p para compatibilidad con Telegram",
+                filepath, codec, pix_fmt, duration or -1)
     # Es la etapa más lenta de todas y hasta ahora no se anunciaba: el canal se quedaba
     # en "Procesando" durante todo el recode, que en un host de 0,1 vCPU son minutos.
     if on_progress:

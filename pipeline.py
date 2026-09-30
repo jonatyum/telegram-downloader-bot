@@ -68,6 +68,9 @@ _PHASE_MESSAGES = {
     "finished":    "🔄 Procesando",
     "converting":  "🎞️ Convirtiendo el video, esto tarda un poco",
     "normalizing": "🔊 Ajustando el volumen",
+    # No se pudo convertir y se entrega tal cual: mejor avisarlo que dejar que el usuario
+    # descubra solo que el video se ve congelado.
+    "incompatible": "⚠️ No puedo convertirlo aquí; te lo mando tal cual (puede no verse en Telegram)",
     # El recode de máxima calidad no salió; se reintenta en el formato compatible.
     "fallback":    "⚠️ No pude convertirlo en máxima calidad, bajando la versión compatible",
 }

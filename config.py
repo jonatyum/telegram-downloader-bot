@@ -123,6 +123,18 @@ MAX_COMPRESS_HEIGHT = _env_int("MAX_COMPRESS_HEIGHT", MAX_VIDEO_HEIGHT)
 # 0 = dejar decidir a ffmpeg (solo tiene sentido en una máquina con CPU de verdad).
 FFMPEG_THREADS = _env_int("FFMPEG_THREADS", 2)
 
+# Duración máxima de video (segundos) que este host acepta RECODIFICAR. Por encima, se
+# entrega el formato original sin convertir en vez de intentarlo.
+#
+# No es una preferencia de calidad, es un límite de plataforma. Medido en producción
+# (Render free, 0,1 vCPU): un Reel en VP9 no terminó de convertirse en 300 s, o sea que
+# se gastaron cinco minutos para acabar sin nada — y después el fallback volvía a
+# descargar desde cero. Fallar rápido vale infinitamente más que intentarlo: la conversión
+# o cabe con holgura o no se empieza.
+# 0 = no recodificar nunca (ningún video dura 0 s o menos). El default es deliberadamente
+# alto: en una máquina con CPU de verdad convertir es cuestión de segundos.
+TRANSCODE_MAX_DURATION = _env_int("TRANSCODE_MAX_DURATION", 3600)
+
 # --- Modo "máxima calidad" (/settings del bot) ---
 # Tope de resolución del modo. También hace de centinela: es el valor que se guarda en
 # users.max_resolution para distinguirlo de una resolución normal (el bot solo ofrece

@@ -8,9 +8,10 @@ import yt_dlp
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, BotCommand, BotCommandScopeDefault, BotCommandScopeChat, InputMediaPhoto, InputMediaVideo
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, CallbackQueryHandler, ContextTypes, filters
 
-from config import EXECUTOR_MAX_WORKERS, BOT_TOKEN, MAX_TELEGRAM_SIZE_BYTES, MAX_PREFLIGHT_SIZE_BYTES, MAX_CONCURRENT_DOWNLOADS, ADMIN_CHAT_ID, HEALTH_PORT, MAX_VIDEO_HEIGHT, MAX_COMPRESS_HEIGHT, BEST_QUALITY_HEIGHT, WEBHOOK_URL, WEBHOOK_SECRET, PORT, NOTIFY_ON_START, WEB_URL
+from config import EXECUTOR_MAX_WORKERS, TRANSCODE_MAX_DURATION, BOT_TOKEN, MAX_TELEGRAM_SIZE_BYTES, MAX_PREFLIGHT_SIZE_BYTES, MAX_CONCURRENT_DOWNLOADS, ADMIN_CHAT_ID, HEALTH_PORT, MAX_VIDEO_HEIGHT, MAX_COMPRESS_HEIGHT, BEST_QUALITY_HEIGHT, WEBHOOK_URL, WEBHOOK_SECRET, PORT, NOTIFY_ON_START, WEB_URL
 from database import init_db, upsert_user, get_all_users, get_stats, get_user_max_resolution, set_user_max_resolution, clear_user_max_resolution
-from downloader import check_youtube_config, get_video_info, get_audio_info, purge_temp_dir, VideoConversionError
+from downloader import (check_youtube_config, get_video_info, get_audio_info, purge_temp_dir,
+                        transcode_allowed, VideoConversionError)
 from links import extract_urls, is_supported_url, is_youtube_url
 from pipeline import DeliveryLimits, Pipeline, download_error_message, install_bounded_executor
 from rate_limiter import rate_limiter
@@ -184,6 +185,22 @@ def _quality_display(current: int | None) -> str:
     return f"{current}p" if current else f"Por defecto ({MAX_VIDEO_HEIGHT}p)"
 
 
+def _transcode_note() -> str:
+    """
+    Aviso en /settings cuando este servidor no puede convertir (o casi). Vale la pena
+    decirlo ahí: si no, quien active máxima calidad recibiría siempre la versión
+    compatible sin entender por qué, y la alternativa —avisarlo en cada descarga— sería
+    ruido en todas las que no tienen nada que ver.
+    """
+    if TRANSCODE_MAX_DURATION >= 3600:
+        return ""
+    if not TRANSCODE_MAX_DURATION:
+        return ("\n\n⚠️ Este servidor no tiene CPU para convertir, así que máxima calidad "
+                "solo cambia algo cuando el mejor formato ya es compatible.")
+    return (f"\n\n⚠️ Este servidor solo puede convertir videos de hasta "
+            f"{TRANSCODE_MAX_DURATION}s; por encima recibes la versión compatible.")
+
+
 def _conversion_error_message(best_quality: bool) -> str:
     """
     Qué decirle al usuario cuando el video bajó pero no se pudo convertir. Suele ser el
@@ -342,7 +359,7 @@ async def cmd_settings(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "archivo más liviano y descarga más rápida.\n\n"
         "🔝 *Máxima calidad* baja el mejor formato que haya aunque venga en un códec "
         "que Telegram no reproduce (el 1080p de TikTok, por ejemplo): lo convierto yo. "
-        "Tarda bastante más y con videos largos puede fallar.",
+        "Tarda bastante más y con videos largos puede fallar." + _transcode_note(),
         reply_markup=_resolution_keyboard(current),
         parse_mode="Markdown",
     )
@@ -524,6 +541,16 @@ async def _process_url(update: Update, url: str, user_pref: int | None, allow_fo
         if best_quality and info.get("avc_matches_best", False):
             logger.info("Máxima calidad sin recode para %s: el H.264 ya da la mejor "
                         "resolución disponible", url)
+            best_quality = False
+        elif best_quality and not transcode_allowed(info.get("duration")):
+            # El modo elegiría el formato de más resolución aunque haya que convertirlo, y
+            # en este host la conversión no cabe (ver TRANSCODE_MAX_DURATION). Decidirlo
+            # ACÁ, antes de descargar, es la diferencia entre entregar el video compatible
+            # de una vez y lo que pasaba en producción: bajar el VP9, quemar el timeout de
+            # 5 minutos del recode y volver a descargar desde cero por el fallback.
+            logger.info("Máxima calidad degradada para %s: convertir %ss no cabe en este "
+                        "host (TRANSCODE_MAX_DURATION=%s)", url, info.get("duration"),
+                        TRANSCODE_MAX_DURATION)
             best_quality = False
 
         # Carrusel (varios elementos) o post de una sola foto: se descarga completo y se
