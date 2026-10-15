@@ -93,6 +93,7 @@ MAX_DOCUMENT_SIZE_BYTES = _env_int("MAX_DOCUMENT_SIZE_MB", 2000) * 1024 * 1024
 SUPPORTED_DOMAINS = [
     "tiktok.com",
     "vm.tiktok.com",
+    "tt.site",
     "instagram.com",
     "instagr.am",
     "facebook.com",
